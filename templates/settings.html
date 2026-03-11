@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Configuración del Pipeline</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body data-page="settings">
+
+<nav class="navbar navbar-dark">
+  <div class="container-fluid px-4">
+    <div class="d-flex align-items-center gap-3">
+      <span class="navbar-brand d-flex align-items-center gap-2 mb-0">
+        <i class="bi bi-linkedin fs-4"></i>
+        <span class="fw-bold">LinkedIn Auto-Poster</span>
+      </span>
+      <div class="top-nav-links d-none d-md-flex align-items-center gap-2">
+        <a href="/" class="top-nav-link">Dashboard</a>
+        <a href="/automation" class="top-nav-link">Automatización</a>
+        <a href="/settings" class="top-nav-link active">Configuración</a>
+      </div>
+    </div>
+    <div id="auth-banner" class="d-flex align-items-center gap-2">
+      <span id="auth-status-text" class="badge fs-6 px-3 py-2">
+        <i class="bi bi-clock-history me-1"></i> Verificando...
+      </span>
+      <button id="login-btn" class="btn btn-sm btn-outline-light d-none" onclick="startLogin()">
+        <i class="bi bi-box-arrow-in-right me-1"></i> Iniciar sesión
+      </button>
+      <button id="disconnect-btn" class="btn btn-sm btn-outline-danger d-none" onclick="disconnectLinkedIn()">
+        <i class="bi bi-x-circle me-1"></i> Cerrar sesión
+      </button>
+    </div>
+  </div>
+</nav>
+
+<main class="container py-4">
+  <section class="page-intro card shadow-sm mb-4">
+    <div class="card-body d-flex flex-wrap justify-content-between align-items-start gap-3">
+      <div>
+        <span class="eyebrow text-uppercase">Configuración</span>
+        <h1 class="h4 mb-2">Categorías y prompts del pipeline</h1>
+        <p class="text-muted mb-0">Crea categorías y define instrucciones distintas para tendencias, historial, copy e imagen.</p>
+      </div>
+      <button class="btn btn-outline-primary" onclick="createNewCategory()">
+        <i class="bi bi-plus-lg me-2"></i>Nueva categoría
+      </button>
+    </div>
+  </section>
+
+  <div id="login-card" class="card shadow-sm mb-4 border-warning d-none">
+    <div class="card-body">
+      <h6 class="card-title d-flex align-items-center gap-2 text-warning">
+        <i class="bi bi-browser-chrome"></i> Iniciando sesión en LinkedIn...
+      </h6>
+      <p class="text-muted small mb-2">
+        Se abrirá una ventana del navegador Chrome. Si LinkedIn pide verificación o código 2FA, complétalo ahí.
+      </p>
+      <div id="login-progress" class="d-flex align-items-center gap-2">
+        <div class="spinner-border spinner-border-sm text-warning" role="status"></div>
+        <span id="login-message" class="text-muted small">Iniciando...</span>
+      </div>
+      <div id="login-result" class="mt-2 d-none"></div>
+    </div>
+  </div>
+
+  <div class="row g-4">
+    <div class="col-lg-4">
+      <div class="card shadow-sm h-100">
+        <div class="card-header fw-semibold d-flex align-items-center justify-content-between">
+          <span><i class="bi bi-collection-fill me-2"></i>Categorías</span>
+          <span id="settings-default-pill" class="badge bg-secondary">Default</span>
+        </div>
+        <div class="card-body">
+          <div id="category-list" class="settings-category-list">
+            <p class="text-muted small mb-0">Cargando categorías...</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-lg-8">
+      <div class="card shadow-sm">
+        <div class="card-header fw-semibold">
+          <i class="bi bi-sliders me-2"></i>Editor de configuración
+        </div>
+        <div class="card-body">
+          <div id="settings-alert" class="alert d-none"></div>
+          <input type="hidden" id="category-id" />
+
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">Nombre de la categoría</label>
+              <input id="category-name" class="form-control" placeholder="historyTime" />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label fw-semibold">Descripción interna</label>
+              <input id="category-description" class="form-control" placeholder="Resumen rápido del objetivo de esta categoría" />
+            </div>
+          </div>
+
+          <div class="form-check form-switch mt-3">
+            <input class="form-check-input" type="checkbox" id="category-default">
+            <label class="form-check-label" for="category-default">Usar como categoría predeterminada</label>
+          </div>
+
+          <div class="mt-4">
+            <label class="form-label fw-semibold">Investigar tendencias</label>
+            <textarea id="category-trends-prompt" class="form-control settings-textarea" rows="4"></textarea>
+          </div>
+
+          <div class="mt-3">
+            <label class="form-label fw-semibold">Revisar historial de posts</label>
+            <textarea id="category-history-prompt" class="form-control settings-textarea" rows="4"></textarea>
+          </div>
+
+          <div class="mt-3">
+            <label class="form-label fw-semibold">Generar copy con Claude AI</label>
+            <textarea id="category-content-prompt" class="form-control settings-textarea" rows="5"></textarea>
+          </div>
+
+          <div class="mt-3">
+            <label class="form-label fw-semibold">Generar imagen con Grok</label>
+            <textarea id="category-image-prompt" class="form-control settings-textarea" rows="4"></textarea>
+          </div>
+
+          <div class="d-flex gap-2 flex-wrap mt-4">
+            <button class="btn btn-primary" onclick="saveCategorySettings()">
+              <i class="bi bi-floppy-fill me-2"></i>Guardar categoría
+            </button>
+            <button class="btn btn-outline-danger" id="delete-category-btn" onclick="deleteCurrentCategory()">
+              <i class="bi bi-trash3 me-2"></i>Eliminar
+            </button>
+            <button class="btn btn-outline-secondary" onclick="createNewCategory()">
+              <i class="bi bi-file-earmark-plus me-2"></i>Limpiar formulario
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>

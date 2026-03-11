@@ -1,0 +1,32 @@
+# Credentials & secrets
+config.yaml
+.env
+
+# Runtime data
+post_history.json
+posts.db
+linkedin_session/
+
+# Generated files
+static/generated/
+static/debug/
+
+# Python
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+nohup.out

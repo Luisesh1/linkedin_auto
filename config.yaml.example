@@ -1,0 +1,10 @@
+linkedin:
+  email: "tu@email.com"
+  password: "tu_contraseña_de_linkedin"
+
+grok:
+  api_key: "YOUR_XAI_GROK_API_KEY"  # console.x.ai — usado para tendencias, contenido e imágenes
+
+app:
+  port: 5000
+  secret_key: "CAMBIA_ESTO_POR_UNA_CLAVE_ALEATORIA"

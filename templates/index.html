@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LinkedIn Auto-Poster</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body data-page="dashboard">
+
+<nav class="navbar navbar-dark">
+  <div class="container-fluid px-4">
+    <div class="d-flex align-items-center gap-3">
+      <span class="navbar-brand d-flex align-items-center gap-2 mb-0">
+        <i class="bi bi-linkedin fs-4"></i>
+        <span class="fw-bold">LinkedIn Auto-Poster</span>
+      </span>
+      <div class="top-nav-links d-none d-md-flex align-items-center gap-2">
+        <a href="/" class="top-nav-link active">Dashboard</a>
+        <a href="/automation" class="top-nav-link">Automatización</a>
+        <a href="/settings" class="top-nav-link">Configuración</a>
+      </div>
+    </div>
+    <div id="auth-banner" class="d-flex align-items-center gap-2">
+      <span id="auth-status-text" class="badge fs-6 px-3 py-2">
+        <i class="bi bi-clock-history me-1"></i> Verificando...
+      </span>
+      <button id="login-btn" class="btn btn-sm btn-outline-light d-none" onclick="startLogin()">
+        <i class="bi bi-box-arrow-in-right me-1"></i> Iniciar sesión
+      </button>
+      <button id="disconnect-btn" class="btn btn-sm btn-outline-danger d-none" onclick="disconnectLinkedIn()">
+        <i class="bi bi-x-circle me-1"></i> Cerrar sesión
+      </button>
+    </div>
+  </div>
+</nav>
+
+<main class="container py-4">
+  <section class="page-intro card shadow-sm mb-4">
+    <div class="card-body">
+      <div class="dashboard-hero">
+        <div>
+          <span class="eyebrow text-uppercase">Dashboard</span>
+          <h1 class="h4 mb-2">Interfaz principal más limpia</h1>
+          <p class="text-muted mb-3">La automatización del post ahora está separada en una página dedicada. Desde aquí gestionas sesión, programación e historial.</p>
+          <a href="/automation" class="btn btn-generate">
+            <i class="bi bi-stars me-2"></i>Abrir automatización de posts
+          </a>
+          <a href="/settings" class="btn btn-outline-secondary ms-2">
+            <i class="bi bi-sliders me-2"></i>Configurar categorías
+          </a>
+        </div>
+        <div class="dashboard-summary">
+          <div class="summary-chip">
+            <i class="bi bi-calendar-event"></i>
+            <span>Programación</span>
+          </div>
+          <div class="summary-chip">
+            <i class="bi bi-clock-history"></i>
+            <span>Historial</span>
+          </div>
+          <div class="summary-chip">
+            <i class="bi bi-shield-check"></i>
+            <span>Sesión LinkedIn</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="login-card" class="card shadow-sm mb-4 border-warning d-none">
+    <div class="card-body">
+      <h6 class="card-title d-flex align-items-center gap-2 text-warning">
+        <i class="bi bi-browser-chrome"></i> Iniciando sesión en LinkedIn...
+      </h6>
+      <p class="text-muted small mb-2">
+        Se abrirá una ventana del navegador Chrome. Si LinkedIn pide verificación o código 2FA, complétalo ahí.
+      </p>
+      <div id="login-progress" class="d-flex align-items-center gap-2">
+        <div class="spinner-border spinner-border-sm text-warning" role="status"></div>
+        <span id="login-message" class="text-muted small">Iniciando...</span>
+      </div>
+      <div id="login-result" class="mt-2 d-none"></div>
+    </div>
+  </div>
+
+  <div class="card shadow-sm mt-5" id="schedule-card">
+    <div class="card-header d-flex align-items-center justify-content-between">
+      <span class="fw-semibold"><i class="bi bi-calendar-event-fill me-2"></i>Publicaciones programadas</span>
+      <div class="d-flex align-items-center gap-2">
+        <span id="sched-status-badge" class="badge bg-secondary">Desactivado</span>
+        <div class="form-check form-switch mb-0">
+          <input class="form-check-input" type="checkbox" id="sched-enabled"
+                 onchange="onScheduleEnabledChange()" style="cursor:pointer;">
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+
+      <!-- Mode selector -->
+      <div class="mb-3">
+        <label class="form-label fw-semibold small">Modo de programación</label>
+        <div class="d-flex gap-3">
+          <div class="form-check">
+            <input class="form-check-input" type="radio" name="sched-mode" id="sched-mode-interval"
+                   value="interval" checked onchange="onSchedModeChange()">
+            <label class="form-check-label small" for="sched-mode-interval">Cada X horas</label>
+          </div>
+          <div class="form-check">
+            <input class="form-check-input" type="radio" name="sched-mode" id="sched-mode-times"
+                   value="times" onchange="onSchedModeChange()">
+            <label class="form-check-label small" for="sched-mode-times">Horas específicas</label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Interval mode -->
+      <div id="sched-interval-section" class="mb-3">
+        <label class="form-label small">Intervalo (horas)</label>
+        <div class="d-flex align-items-center gap-2">
+          <input type="range" class="form-range flex-grow-1" id="sched-interval-range"
+                 min="1" max="168" step="1" value="24"
+                 oninput="document.getElementById('sched-interval-val').textContent=this.value+'h'">
+          <span id="sched-interval-val" class="badge bg-secondary" style="min-width:42px">24h</span>
+        </div>
+        <div class="d-flex justify-content-between">
+          <small class="text-muted">1h</small>
+          <small class="text-muted">24h</small>
+          <small class="text-muted">72h</small>
+          <small class="text-muted">1 semana</small>
+        </div>
+      </div>
+
+      <!-- Times-of-day mode -->
+      <div id="sched-times-section" class="mb-3 d-none">
+        <label class="form-label small">Horas del día (UTC)</label>
+        <div id="sched-times-list" class="d-flex flex-wrap gap-2 mb-2"></div>
+        <div class="d-flex gap-2">
+          <input type="time" class="form-control form-control-sm" id="sched-time-input" style="width:130px">
+          <button class="btn btn-sm btn-outline-secondary" onclick="addScheduleTime()">
+            <i class="bi bi-plus-lg"></i> Agregar
+          </button>
+        </div>
+      </div>
+
+      <!-- Days of week -->
+      <div class="mb-3">
+        <label class="form-label fw-semibold small">Días de la semana <small class="text-muted fw-normal">(vacío = todos)</small></label>
+        <div class="d-flex flex-wrap gap-2" id="sched-days-row">
+          <!-- rendered by JS -->
+        </div>
+      </div>
+
+      <!-- Save + Run Now -->
+      <div class="d-flex gap-2 flex-wrap mt-3">
+        <button class="btn btn-primary btn-sm" onclick="saveSchedule()">
+          <i class="bi bi-floppy-fill me-1"></i>Guardar configuración
+        </button>
+        <button class="btn btn-outline-warning btn-sm" onclick="scheduleRunNow()"
+                id="sched-run-now-btn">
+          <i class="bi bi-play-fill me-1"></i>Ejecutar ahora
+        </button>
+      </div>
+
+      <!-- Status row -->
+      <div class="mt-3 pt-3 border-top" id="sched-status-row">
+        <div class="d-flex flex-wrap gap-3 small text-muted">
+          <div><i class="bi bi-clock me-1"></i>Próximo: <strong id="sched-next-run">—</strong></div>
+          <div><i class="bi bi-check2-circle me-1"></i>Último: <strong id="sched-last-run">—</strong></div>
+          <div id="sched-current-msg" class="text-info d-none">
+            <span class="spinner-border spinner-border-sm me-1"></span>
+            <span id="sched-current-msg-text"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Recent scheduled runs -->
+      <div class="mt-3" id="sched-runs-section">
+        <div class="d-flex align-items-center justify-content-between mb-1">
+          <small class="text-muted fw-semibold">Últimas ejecuciones</small>
+          <button class="btn btn-sm btn-link p-0 text-muted" onclick="loadSchedule()">
+            <i class="bi bi-arrow-clockwise"></i>
+          </button>
+        </div>
+        <div id="sched-runs-list">
+          <p class="text-muted small mb-0">Sin ejecuciones aún.</p>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Post history section -->
+  <div class="mt-5">
+    <div class="d-flex align-items-center justify-content-between mb-2">
+      <h6 class="text-muted mb-0"><i class="bi bi-clock-history me-2"></i>Historial de publicaciones</h6>
+      <button class="btn btn-sm btn-outline-secondary" onclick="loadHistory()">
+        <i class="bi bi-arrow-clockwise"></i>
+      </button>
+    </div>
+    <div id="history-container">
+      <p class="text-muted small">Sin publicaciones registradas aún.</p>
+    </div>
+  </div>
+
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>

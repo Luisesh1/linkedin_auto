@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Automatización de Posts</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body data-page="automation">
+
+<nav class="navbar navbar-dark">
+  <div class="container-fluid px-4">
+    <div class="d-flex align-items-center gap-3">
+      <span class="navbar-brand d-flex align-items-center gap-2 mb-0">
+        <i class="bi bi-linkedin fs-4"></i>
+        <span class="fw-bold">LinkedIn Auto-Poster</span>
+      </span>
+      <div class="top-nav-links d-none d-md-flex align-items-center gap-2">
+        <a href="/" class="top-nav-link">Dashboard</a>
+        <a href="/automation" class="top-nav-link active">Automatización</a>
+        <a href="/settings" class="top-nav-link">Configuración</a>
+      </div>
+    </div>
+    <div class="d-flex align-items-center gap-3">
+      <div class="d-flex align-items-center gap-2" title="Modo headless: navegador invisible al publicar">
+        <i class="bi bi-display text-secondary small"></i>
+        <div class="form-check form-switch mb-0">
+          <input class="form-check-input" type="checkbox" id="headless-toggle" checked
+                 onchange="setHeadlessMode(this.checked)" style="cursor:pointer;">
+        </div>
+        <span id="headless-label" class="text-light small" style="min-width:60px">Headless</span>
+      </div>
+      <div id="auth-banner" class="d-flex align-items-center gap-2">
+        <span id="auth-status-text" class="badge fs-6 px-3 py-2">
+          <i class="bi bi-clock-history me-1"></i> Verificando...
+        </span>
+        <button id="login-btn" class="btn btn-sm btn-outline-light d-none" onclick="startLogin()">
+          <i class="bi bi-box-arrow-in-right me-1"></i> Iniciar sesión
+        </button>
+        <button id="disconnect-btn" class="btn btn-sm btn-outline-danger d-none" onclick="disconnectLinkedIn()">
+          <i class="bi bi-x-circle me-1"></i> Cerrar sesión
+        </button>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<main class="container py-4">
+  <section class="page-intro card shadow-sm mb-4">
+    <div class="card-body d-flex flex-wrap justify-content-between align-items-start gap-3">
+      <div>
+        <span class="eyebrow text-uppercase">Automatización</span>
+        <h1 class="h4 mb-2">Generación y publicación de posts</h1>
+        <p class="text-muted mb-0">Aquí vive el pipeline completo: tendencias, copy, imagen, vista previa y publicación en LinkedIn.</p>
+      </div>
+      <a href="/" class="btn btn-outline-secondary">
+        <i class="bi bi-grid-1x2-fill me-2"></i>Volver al dashboard
+      </a>
+    </div>
+  </section>
+
+  <div id="login-card" class="card shadow-sm mb-4 border-warning d-none">
+    <div class="card-body">
+      <h6 class="card-title d-flex align-items-center gap-2 text-warning">
+        <i class="bi bi-browser-chrome"></i> Iniciando sesión en LinkedIn...
+      </h6>
+      <p class="text-muted small mb-2">
+        Se abrirá una ventana del navegador Chrome. Si LinkedIn pide verificación o código 2FA, complétalo ahí.
+      </p>
+      <div id="login-progress" class="d-flex align-items-center gap-2">
+        <div class="spinner-border spinner-border-sm text-warning" role="status"></div>
+        <span id="login-message" class="text-muted small">Iniciando...</span>
+      </div>
+      <div id="login-result" class="mt-2 d-none"></div>
+    </div>
+  </div>
+
+  <div class="text-center mb-4 d-flex flex-wrap justify-content-center gap-3">
+    <div class="automation-category-picker">
+      <label for="pipeline-category" class="form-label fw-semibold mb-2">Tipo de publicación</label>
+      <div class="d-flex gap-2 align-items-center flex-wrap justify-content-center">
+        <select id="pipeline-category" class="form-select" style="min-width:240px"></select>
+        <a href="/settings" class="btn btn-outline-secondary">
+          <i class="bi bi-sliders me-2"></i>Editar categorías
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <div class="text-center mb-4 d-flex flex-wrap justify-content-center gap-3">
+    <button id="generate-btn" class="btn btn-generate btn-lg px-5 py-3" onclick="startPipeline()">
+      <i class="bi bi-magic me-2"></i>Generar Post
+    </button>
+    <button id="test-btn" class="btn btn-outline-secondary btn-lg px-4 py-3" onclick="startTestPipeline()">
+      <i class="bi bi-eye me-2"></i>Modo Prueba
+    </button>
+    <button id="regenerate-btn" class="btn btn-outline-secondary btn-lg px-4 py-3 d-none" onclick="regenerate()">
+      <i class="bi bi-arrow-clockwise me-2"></i>Regenerar
+    </button>
+  </div>
+
+  <div id="steps-panel" class="card shadow-sm mb-4 d-none">
+    <div class="card-header fw-semibold">
+      <i class="bi bi-gear-fill me-2"></i>Progreso del Pipeline
+    </div>
+    <ul class="list-group list-group-flush">
+      <li class="list-group-item" id="step-1">
+        <div class="d-flex align-items-center gap-3">
+          <div class="step-icon" id="icon-1"><i class="bi bi-circle text-muted"></i></div>
+          <div class="flex-grow-1">
+            <div class="step-label fw-semibold">1. Investigar tendencias</div>
+            <div class="step-detail text-muted small" id="detail-1"></div>
+          </div>
+          <button id="regen-1" class="btn btn-sm btn-outline-secondary d-none"
+                  onclick="rerunFromStep(1)" title="Regenerar tendencias y continuar">
+            <i class="bi bi-arrow-clockwise me-1"></i><span class="d-none d-sm-inline">Regenerar</span>
+          </button>
+        </div>
+      </li>
+      <li class="list-group-item" id="step-2">
+        <div class="d-flex align-items-center gap-3">
+          <div class="step-icon" id="icon-2"><i class="bi bi-circle text-muted"></i></div>
+          <div class="flex-grow-1">
+            <div class="step-label fw-semibold">2. Revisar historial de posts</div>
+            <div class="step-detail text-muted small" id="detail-2"></div>
+          </div>
+          <button id="regen-2" class="btn btn-sm btn-outline-secondary d-none"
+                  onclick="rerunFromStep(2)" title="Recargar historial y continuar">
+            <i class="bi bi-arrow-clockwise me-1"></i><span class="d-none d-sm-inline">Regenerar</span>
+          </button>
+        </div>
+      </li>
+      <li class="list-group-item" id="step-3">
+        <div class="d-flex align-items-center gap-3">
+          <div class="step-icon" id="icon-3"><i class="bi bi-circle text-muted"></i></div>
+          <div class="flex-grow-1">
+            <div class="step-label fw-semibold">3. Generar copy con Claude AI</div>
+            <div class="step-detail text-muted small" id="detail-3"></div>
+          </div>
+          <button id="regen-3" class="btn btn-sm btn-outline-secondary d-none"
+                  onclick="rerunFromStep(3)" title="Regenerar texto del post">
+            <i class="bi bi-arrow-clockwise me-1"></i><span class="d-none d-sm-inline">Regenerar</span>
+          </button>
+        </div>
+      </li>
+      <li class="list-group-item" id="step-4">
+        <div class="d-flex align-items-center gap-3">
+          <div class="step-icon" id="icon-4"><i class="bi bi-circle text-muted"></i></div>
+          <div class="flex-grow-1">
+            <div class="step-label fw-semibold">4. Generar imagen con Grok (anime)</div>
+            <div class="step-detail text-muted small" id="detail-4"></div>
+          </div>
+          <button id="regen-4" class="btn btn-sm btn-outline-secondary d-none"
+                  onclick="rerunFromStep(4)" title="Regenerar imagen">
+            <i class="bi bi-arrow-clockwise me-1"></i><span class="d-none d-sm-inline">Regenerar</span>
+          </button>
+        </div>
+      </li>
+      <li class="list-group-item" id="step-5">
+        <div class="d-flex align-items-center gap-3">
+          <div class="step-icon" id="icon-5"><i class="bi bi-circle text-muted"></i></div>
+          <div class="flex-grow-1">
+            <div class="step-label fw-semibold">5. Vista previa y publicación</div>
+            <div class="step-detail text-muted small" id="detail-5"></div>
+          </div>
+        </div>
+      </li>
+    </ul>
+  </div>
+
+  <div id="preview-panel" class="card shadow-sm d-none">
+    <div class="card-header fw-semibold d-flex align-items-center gap-2">
+      <i class="bi bi-eye-fill"></i> Vista Previa del Post
+      <span id="preview-topic-badge" class="badge bg-primary ms-2 fw-normal"></span>
+      <span id="test-mode-badge" class="badge bg-warning text-dark ms-1 fw-normal d-none">
+        <i class="bi bi-flask me-1"></i>Modo Prueba — no se publicará
+      </span>
+    </div>
+    <div class="card-body">
+      <div id="reasoning-box" class="alert alert-info d-flex gap-2 align-items-start py-2 mb-3 d-none">
+        <i class="bi bi-lightbulb-fill mt-1 flex-shrink-0"></i>
+        <div><strong>Por qué este tema:</strong> <span id="reasoning-text"></span></div>
+      </div>
+
+      <div class="row g-4">
+        <div class="col-md-5">
+          <div class="preview-image-container">
+            <img id="preview-image" src="" alt="Imagen generada" class="img-fluid rounded shadow" />
+            <div class="preview-image-label">
+              <i class="bi bi-stars me-1"></i>Generada con Grok · Estilo anime
+            </div>
+          </div>
+        </div>
+        <div class="col-md-7">
+          <label class="form-label fw-semibold">Texto del post <small class="text-muted fw-normal">(puedes editarlo)</small></label>
+          <textarea id="post-textarea" class="form-control post-textarea" rows="12"></textarea>
+          <div class="d-flex justify-content-between align-items-center mt-2">
+            <small id="char-count" class="text-muted"></small>
+            <small class="text-muted">LinkedIn recomienda 150-300 palabras</small>
+          </div>
+        </div>
+      </div>
+
+      <div class="d-flex gap-3 mt-4 flex-wrap">
+        <button id="publish-btn" class="btn btn-publish btn-lg flex-grow-1" onclick="publishPost()">
+          <i class="bi bi-linkedin me-2"></i>Publicar en LinkedIn
+        </button>
+      </div>
+
+      <div id="publish-progress" class="alert alert-secondary d-flex align-items-center gap-2 mt-3 d-none">
+        <div class="spinner-border spinner-border-sm"></div>
+        <span id="publish-progress-msg">Abriendo navegador...</span>
+      </div>
+      <div id="publish-success" class="alert alert-success d-flex align-items-center gap-2 mt-3 d-none">
+        <i class="bi bi-check-circle-fill fs-5"></i>
+        <div><strong>¡Publicado exitosamente!</strong> Tu post ya está en LinkedIn.</div>
+      </div>
+      <div id="publish-error" class="alert alert-danger d-flex align-items-center gap-2 mt-3 d-none">
+        <i class="bi bi-exclamation-triangle-fill fs-5"></i>
+        <div id="publish-error-text"></div>
+      </div>
+
+      <div id="screenshots-section" class="mt-3 d-none">
+        <div class="accordion" id="screenshots-accordion">
+          <div class="accordion-item border-secondary">
+            <h2 class="accordion-header">
+              <button class="accordion-button collapsed py-2 bg-dark text-light" type="button"
+                      data-bs-toggle="collapse" data-bs-target="#screenshots-body">
+                <i class="bi bi-camera-fill me-2"></i>
+                <span>Capturas del navegador</span>
+                <span id="screenshots-count" class="badge bg-secondary ms-2"></span>
+              </button>
+            </h2>
+            <div id="screenshots-body" class="accordion-collapse collapse">
+              <div class="accordion-body p-2">
+                <div id="screenshots-grid" class="d-flex flex-wrap gap-2"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>
