@@ -11,9 +11,15 @@ from datetime import datetime
 
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
+from src.config import get_setting
+from src.logging_utils import get_logger
+
 SESSION_DIR = os.path.abspath("linkedin_session")
 HISTORY_FILE = "post_history.json"
 SESSION_FLAG = os.path.join(SESSION_DIR, "session_ok.json")
+logger = get_logger(__name__)
+_SESSION_PROBE_CACHE = {"checked_at": 0.0, "valid": False}
+_SESSION_PROBE_TTL_SECONDS = 120
 
 # Script injected to hide automation signals from LinkedIn
 _STEALTH_SCRIPT = """
@@ -26,29 +32,51 @@ window.chrome = { runtime: {} };
 
 # ─── Config helper ────────────────────────────────────────────────────────────
 
-def _load_config() -> dict:
-    import yaml
-    with open("config.yaml") as f:
-        return yaml.safe_load(f)
-
-
 def _is_headless() -> bool:
-    try:
-        cfg = _load_config()
-        return bool(cfg.get("app", {}).get("headless", False))
-    except Exception:
-        return False
+    return bool(get_setting("app", "headless", True))
 
 
 # ─── Session state ────────────────────────────────────────────────────────────
 
-def is_session_valid() -> bool:
+def _set_session_probe_cache(valid: bool) -> None:
+    _SESSION_PROBE_CACHE["checked_at"] = time.time()
+    _SESSION_PROBE_CACHE["valid"] = bool(valid)
+
+
+def _probe_session_via_browser(log=print) -> bool:
+    with sync_playwright() as p:
+        context = _get_context(p, headless=True)
+        page = context.new_page()
+        try:
+            _goto_with_retry(page, "https://www.linkedin.com/feed/", log)
+            current = page.url.lower()
+            valid = not any(token in current for token in ("login", "authwall", "checkpoint", "challenge", "captcha", "verification"))
+            if not valid:
+                _clear_session()
+            return valid
+        except Exception as exc:
+            log(f"No se pudo verificar la sesión real de LinkedIn: {exc}")
+            return False
+        finally:
+            context.close()
+
+
+def is_session_valid(*, verify_browser: bool = False, log=print, max_probe_age_seconds: int = _SESSION_PROBE_TTL_SECONDS) -> bool:
     if not os.path.exists(SESSION_FLAG):
         return False
     try:
         with open(SESSION_FLAG) as f:
             data = json.load(f)
-        return time.time() < data.get("expires_at", 0)
+        if time.time() >= data.get("expires_at", 0):
+            return False
+        if not verify_browser:
+            return True
+        age = time.time() - float(_SESSION_PROBE_CACHE.get("checked_at", 0) or 0)
+        if age <= max_probe_age_seconds:
+            return bool(_SESSION_PROBE_CACHE.get("valid", False))
+        valid = _probe_session_via_browser(log=log)
+        _set_session_probe_cache(valid)
+        return valid
     except Exception:
         return False
 
@@ -68,11 +96,13 @@ def _write_session_flag():
     os.makedirs(SESSION_DIR, exist_ok=True)
     with open(SESSION_FLAG, "w") as f:
         json.dump({"expires_at": time.time() + 55 * 86400}, f)
+    _set_session_probe_cache(True)
 
 
 def _clear_session():
     if os.path.exists(SESSION_FLAG):
         os.remove(SESSION_FLAG)
+    _set_session_probe_cache(False)
 
 
 # ─── Browser context helper ───────────────────────────────────────────────────
@@ -89,8 +119,8 @@ def _get_context(playwright, headless: bool = False):
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/131.0.0.0 Safari/537.36"
         ),
-        locale="es-ES",
-        timezone_id="America/Mexico_City",
+        locale=str(get_setting("linkedin_browser", "locale", "es-ES")),
+        timezone_id=str(get_setting("linkedin_browser", "timezone_id", "America/Mexico_City")),
         args=[
             "--disable-blink-features=AutomationControlled",
             "--no-sandbox",
@@ -175,7 +205,11 @@ def _save_screenshot(page, session_id: str, label: str, screenshots: list):
         page.screenshot(path=path, full_page=False)
         screenshots.append(f"/static/debug/{filename}")
     except Exception as ex:
-        print(f"[debug] Screenshot failed ({label}): {ex}")
+        logger.info(
+            "No se pudo guardar screenshot de debug",
+            extra={"event": "linkedin.debug_screenshot_error"},
+            exc_info=ex,
+        )
 
 
 def _save_debug(page, label: str = "debug"):
@@ -187,14 +221,22 @@ def _save_debug(page, label: str = "debug"):
         with open(os.path.join(debug_dir, f"{label}.html"), "w", encoding="utf-8") as f:
             f.write(page.content())
     except Exception as ex:
-        print(f"[debug] No se pudo guardar debug: {ex}")
+        logger.info(
+            "No se pudo guardar dump de debug",
+            extra={"event": "linkedin.debug_dump_error"},
+            exc_info=ex,
+        )
 
 
 def _goto_with_retry(page, url: str, log=print, retries: int = 3):
     """Navigate to URL using domcontentloaded (not networkidle). Retries on timeout."""
     for attempt in range(1, retries + 1):
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            page.goto(
+                url,
+                wait_until="domcontentloaded",
+                timeout=int(get_setting("linkedin_browser", "feed_timeout_ms", 30000)),
+            )
             # Extra wait for dynamic content to settle
             page.wait_for_timeout(2000)
             return
@@ -764,18 +806,48 @@ def _human_delay(page, min_s: float = 0.8, max_s: float = 1.5):
 # ─── Post history (local) ─────────────────────────────────────────────────────
 
 def get_recent_posts_local(n: int = 5) -> list:
+    try:
+        from src import db
+
+        posts = db.get_recent_posts(n)
+        if posts:
+            return posts
+    except Exception as exc:
+        logger.info(
+            "No se pudo leer historial desde SQLite, usando archivo local",
+            extra={"event": "linkedin.history_db_fallback"},
+            exc_info=exc,
+        )
+
     if not os.path.exists(HISTORY_FILE):
         return []
-    with open(HISTORY_FILE, "r") as f:
+    with open(HISTORY_FILE, "r", encoding="utf-8") as f:
         data = json.load(f)
     posts = data.get("posts", [])
     return posts[-n:] if posts else []
 
 
 def save_to_history(topic: str, post_text: str, post_id: str = "", category: str = "default") -> None:
+    try:
+        from src import db
+
+        db.save_post(
+            topic=topic,
+            post_text=post_text,
+            category=category,
+            published=True,
+        )
+        return
+    except Exception as exc:
+        logger.info(
+            "No se pudo guardar historial en SQLite, usando archivo local",
+            extra={"event": "linkedin.history_file_fallback"},
+            exc_info=exc,
+        )
+
     history = {"posts": []}
     if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, "r") as f:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
             history = json.load(f)
     history["posts"].append({
         "date": datetime.utcnow().isoformat(),
@@ -784,5 +856,5 @@ def save_to_history(topic: str, post_text: str, post_id: str = "", category: str
         "post_text": post_text[:300],
         "linkedin_post_id": post_id,
     })
-    with open(HISTORY_FILE, "w") as f:
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history, f, indent=2, ensure_ascii=False)

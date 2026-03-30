@@ -1,0 +1,19 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: autolinkedin
+    restart: unless-stopped
+    init: true
+    shm_size: "1gb"
+    ports:
+      - "5000:5000"
+    environment:
+      APP_PORT: 5000
+    volumes:
+      - ./config.yaml:/app/config.yaml
+      - ./posts.db:/app/posts.db
+      - ./post_history.json:/app/post_history.json
+      - ./linkedin_session:/app/linkedin_session
+      - ./static:/app/static

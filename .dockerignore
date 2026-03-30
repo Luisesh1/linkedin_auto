@@ -1,0 +1,17 @@
+.git
+.gitignore
+.claude
+.deps
+.pytest_cache
+tests
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+venv
+.env
+posts.db
+post_history.json
+linkedin_session
+static/generated
+static/debug

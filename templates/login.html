@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Acceso Seguro</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/style.css?v=20260314-premium" />
+</head>
+<body class="min-vh-100 d-flex align-items-center justify-content-center" style="background: radial-gradient(circle at top, #17395f 0%, #09131f 55%, #05080d 100%);">
+  <main class="container py-5">
+    <div class="row justify-content-center">
+      <div class="col-md-7 col-lg-5">
+        <div class="card shadow-lg border-0">
+          <div class="card-body p-4 p-lg-5">
+            <div class="text-center mb-4">
+              <div class="d-inline-flex align-items-center justify-content-center rounded-circle mb-3" style="width:64px;height:64px;background:#0a66c2;color:#fff;">
+                <i class="bi bi-shield-lock-fill fs-2"></i>
+              </div>
+              <h1 class="h4 mb-2">Acceso administrativo</h1>
+              <p class="text-muted mb-0">Autentícate para usar el panel y las automatizaciones.</p>
+            </div>
+
+            {% if not security_ready %}
+            <div class="alert alert-warning">
+              Configura `ADMIN_PASSWORD_HASH` o `security.admin_password_hash` antes de habilitar el acceso.
+            </div>
+            {% endif %}
+
+            {% if login_error %}
+            <div class="alert alert-danger">{{ login_error }}</div>
+            {% endif %}
+
+            <form method="post" action="/login" class="d-grid gap-3">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+              <input type="hidden" name="next" value="{{ next_target }}" />
+
+              <div>
+                <label for="username" class="form-label fw-semibold small">Usuario</label>
+                <input id="username" name="username" type="text" class="form-control" autocomplete="username" required />
+              </div>
+
+              <div>
+                <label for="password" class="form-label fw-semibold small">Contraseña</label>
+                <input id="password" name="password" type="password" class="form-control" autocomplete="current-password" required />
+              </div>
+
+              <button type="submit" class="btn btn-primary btn-lg" {% if not security_ready %}disabled{% endif %}>
+                <i class="bi bi-box-arrow-in-right me-2"></i>Entrar al sistema
+              </button>
+            </form>
+
+            <div class="mt-4 pt-3 border-top text-muted small">
+              Protección activa: sesión administrada por servidor, CSRF, rate limiting de login y headers de seguridad.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</body>
+</html>

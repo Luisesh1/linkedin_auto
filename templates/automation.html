@@ -6,7 +6,7 @@
   <title>Automatización de Posts</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" />
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/style.css" />
+  <link rel="stylesheet" href="/static/css/style.css?v=20260314-premium" />
 </head>
 <body data-page="automation">
 
@@ -43,19 +43,25 @@
           <i class="bi bi-x-circle me-1"></i> Cerrar sesión
         </button>
       </div>
+      <div class="d-flex align-items-center gap-2">
+        <span class="text-light small d-none d-md-inline">{{ app_bootstrap.currentUser }}</span>
+        <button class="btn btn-sm btn-outline-light" onclick="logoutApp()">
+          <i class="bi bi-box-arrow-right me-1"></i> Salir
+        </button>
+      </div>
     </div>
   </div>
 </nav>
 
 <main class="container py-4">
   <section class="page-intro card shadow-sm mb-4">
-    <div class="card-body d-flex flex-wrap justify-content-between align-items-start gap-3">
-      <div>
+    <div class="card-body page-intro-body d-flex flex-wrap justify-content-between align-items-start gap-3">
+      <div class="page-intro-copy">
         <span class="eyebrow text-uppercase">Automatización</span>
         <h1 class="h4 mb-2">Generación y publicación de posts</h1>
-        <p class="text-muted mb-0">Aquí vive el pipeline completo: tendencias, copy, imagen, vista previa y publicación en LinkedIn.</p>
+        <p class="page-intro-text text-muted mb-0">Aquí vive el pipeline completo: tendencias, copy, imagen, vista previa y publicación en LinkedIn.</p>
       </div>
-      <a href="/" class="btn btn-outline-secondary">
+      <a href="/" class="btn btn-outline-secondary intro-secondary-btn">
         <i class="bi bi-grid-1x2-fill me-2"></i>Volver al dashboard
       </a>
     </div>
@@ -77,19 +83,38 @@
     </div>
   </div>
 
-  <div class="text-center mb-4 d-flex flex-wrap justify-content-center gap-3">
-    <div class="automation-category-picker">
-      <label for="pipeline-category" class="form-label fw-semibold mb-2">Tipo de publicación</label>
-      <div class="d-flex gap-2 align-items-center flex-wrap justify-content-center">
-        <select id="pipeline-category" class="form-select" style="min-width:240px"></select>
-        <a href="/settings" class="btn btn-outline-secondary">
+  <section class="automation-category-panel card shadow-sm mb-4">
+    <div class="card-body automation-category-panel-body">
+      <div class="automation-category-panel-head">
+        <div>
+          <span class="automation-section-kicker">Pipeline Setup</span>
+          <h2 class="automation-category-title h5 mb-1">Tipo de publicación</h2>
+          <p class="automation-category-helper mb-0">Elige la categoría que define el enfoque, el tono y la configuración de generación.</p>
+        </div>
+        <a href="/settings" class="btn btn-outline-secondary automation-category-edit-btn">
           <i class="bi bi-sliders me-2"></i>Editar categorías
         </a>
       </div>
-    </div>
-  </div>
 
-  <div class="text-center mb-4 d-flex flex-wrap justify-content-center gap-3">
+      <div class="automation-category-grid">
+        <div class="automation-category-picker">
+          <label for="pipeline-category" class="form-label fw-semibold mb-2">Categoría activa</label>
+          <select id="pipeline-category" class="form-select automation-category-select"></select>
+        </div>
+
+        <div class="automation-category-meta" id="pipeline-category-meta">
+          <div class="automation-category-meta-label">Resumen</div>
+          <div class="automation-category-meta-name-row">
+            <div id="pipeline-category-name" class="automation-category-meta-name">Sin categorías</div>
+            <span id="pipeline-category-default-badge" class="badge automation-category-default-badge d-none">Predeterminada</span>
+          </div>
+          <p id="pipeline-category-description" class="automation-category-meta-description mb-0">Crea o importa una categoría para personalizar el pipeline.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="automation-action-bar mb-4 d-flex flex-wrap justify-content-center gap-3">
     <button id="generate-btn" class="btn btn-generate btn-lg px-5 py-3" onclick="startPipeline()">
       <i class="bi bi-magic me-2"></i>Generar Post
     </button>
@@ -110,7 +135,7 @@
         <div class="d-flex align-items-center gap-3">
           <div class="step-icon" id="icon-1"><i class="bi bi-circle text-muted"></i></div>
           <div class="flex-grow-1">
-            <div class="step-label fw-semibold">1. Investigar tendencias</div>
+            <div class="step-label fw-semibold">1. Investigar señales</div>
             <div class="step-detail text-muted small" id="detail-1"></div>
           </div>
           <button id="regen-1" class="btn btn-sm btn-outline-secondary d-none"
@@ -123,24 +148,24 @@
         <div class="d-flex align-items-center gap-3">
           <div class="step-icon" id="icon-2"><i class="bi bi-circle text-muted"></i></div>
           <div class="flex-grow-1">
-            <div class="step-label fw-semibold">2. Revisar historial de posts</div>
+            <div class="step-label fw-semibold">2. Scoring de novedad</div>
             <div class="step-detail text-muted small" id="detail-2"></div>
           </div>
           <button id="regen-2" class="btn btn-sm btn-outline-secondary d-none"
-                  onclick="rerunFromStep(2)" title="Recargar historial y continuar">
+                  onclick="rerunFromStep(2)" title="Repuntuar candidatos y continuar">
             <i class="bi bi-arrow-clockwise me-1"></i><span class="d-none d-sm-inline">Regenerar</span>
           </button>
         </div>
       </li>
       <li class="list-group-item" id="step-3">
         <div class="d-flex align-items-center gap-3">
-          <div class="step-icon" id="icon-3"><i class="bi bi-circle text-muted"></i></div>
+            <div class="step-icon" id="icon-3"><i class="bi bi-circle text-muted"></i></div>
           <div class="flex-grow-1">
-            <div class="step-label fw-semibold">3. Generar copy con Claude AI</div>
+            <div class="step-label fw-semibold">3. Generar brief interno</div>
             <div class="step-detail text-muted small" id="detail-3"></div>
           </div>
           <button id="regen-3" class="btn btn-sm btn-outline-secondary d-none"
-                  onclick="rerunFromStep(3)" title="Regenerar texto del post">
+                  onclick="rerunFromStep(3)" title="Regenerar brief editorial">
             <i class="bi bi-arrow-clockwise me-1"></i><span class="d-none d-sm-inline">Regenerar</span>
           </button>
         </div>
@@ -149,11 +174,11 @@
         <div class="d-flex align-items-center gap-3">
           <div class="step-icon" id="icon-4"><i class="bi bi-circle text-muted"></i></div>
           <div class="flex-grow-1">
-            <div class="step-label fw-semibold">4. Generar imagen con Grok (anime)</div>
+            <div class="step-label fw-semibold">4. Copy con autochequeo</div>
             <div class="step-detail text-muted small" id="detail-4"></div>
           </div>
           <button id="regen-4" class="btn btn-sm btn-outline-secondary d-none"
-                  onclick="rerunFromStep(4)" title="Regenerar imagen">
+                  onclick="rerunFromStep(4)" title="Regenerar texto del post">
             <i class="bi bi-arrow-clockwise me-1"></i><span class="d-none d-sm-inline">Regenerar</span>
           </button>
         </div>
@@ -162,8 +187,34 @@
         <div class="d-flex align-items-center gap-3">
           <div class="step-icon" id="icon-5"><i class="bi bi-circle text-muted"></i></div>
           <div class="flex-grow-1">
-            <div class="step-label fw-semibold">5. Vista previa y publicación</div>
+            <div class="step-label fw-semibold">5. Imagen con diversidad visual</div>
             <div class="step-detail text-muted small" id="detail-5"></div>
+          </div>
+          <button id="regen-5" class="btn btn-sm btn-outline-secondary d-none"
+                  onclick="rerunFromStep(5)" title="Regenerar imagen">
+            <i class="bi bi-arrow-clockwise me-1"></i><span class="d-none d-sm-inline">Regenerar</span>
+          </button>
+        </div>
+      </li>
+      <li class="list-group-item" id="step-6">
+        <div class="d-flex align-items-center gap-3">
+          <div class="step-icon" id="icon-6"><i class="bi bi-circle text-muted"></i></div>
+          <div class="flex-grow-1">
+            <div class="step-label fw-semibold">6. Gate de calidad</div>
+            <div class="step-detail text-muted small" id="detail-6"></div>
+          </div>
+          <button id="regen-6" class="btn btn-sm btn-outline-secondary d-none"
+                  onclick="rerunFromStep(6)" title="Reevaluar gate final">
+            <i class="bi bi-arrow-clockwise me-1"></i><span class="d-none d-sm-inline">Regenerar</span>
+          </button>
+        </div>
+      </li>
+      <li class="list-group-item" id="step-7">
+        <div class="d-flex align-items-center gap-3">
+          <div class="step-icon" id="icon-7"><i class="bi bi-circle text-muted"></i></div>
+          <div class="flex-grow-1">
+            <div class="step-label fw-semibold">7. Vista previa y publicación</div>
+            <div class="step-detail text-muted small" id="detail-7"></div>
           </div>
         </div>
       </li>
@@ -189,7 +240,7 @@
           <div class="preview-image-container">
             <img id="preview-image" src="" alt="Imagen generada" class="img-fluid rounded shadow" />
             <div class="preview-image-label">
-              <i class="bi bi-stars me-1"></i>Generada con Grok · Estilo anime
+              <i class="bi bi-stars me-1"></i>Generada con Grok · Estilo dinámico
             </div>
           </div>
         </div>
@@ -246,6 +297,9 @@
 </main>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-<script src="/static/js/app.js"></script>
+<script>
+  window.APP_BOOTSTRAP = {{ app_bootstrap|tojson }};
+</script>
+<script src="/static/js/app.js?v=20260317-state"></script>
 </body>
 </html>

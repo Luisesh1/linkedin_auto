@@ -4,7 +4,34 @@ linkedin:
 
 grok:
   api_key: "YOUR_XAI_GROK_API_KEY"  # console.x.ai — usado para tendencias, contenido e imágenes
+  model: "grok-3"
+  image_model: "grok-imagine-image"
 
 app:
   port: 5000
   secret_key: "CAMBIA_ESTO_POR_UNA_CLAVE_ALEATORIA"
+  debug: false
+  headless: true
+  timezone: "America/Mexico_City"
+  session_ttl_hours: 24
+  job_ttl_hours: 24
+  log_level: "INFO"
+
+security:
+  admin_username: "admin"
+  admin_password: ""
+  admin_password_hash: "PON_AQUI_UN_HASH_DE_WERKZEUG"
+  session_timeout_minutes: 480
+  max_login_attempts: 5
+  login_window_minutes: 15
+  lockout_minutes: 15
+  require_https_cookies: false
+  max_content_length_mb: 2
+
+storage:
+  db_path: "posts.db"
+
+linkedin_browser:
+  locale: "es-ES"
+  timezone_id: "America/Mexico_City"
+  feed_timeout_ms: 30000

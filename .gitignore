@@ -1,6 +1,7 @@
 # Credentials & secrets
 config.yaml
 .env
+.claude/
 
 # Runtime data
 post_history.json
@@ -10,6 +11,11 @@ linkedin_session/
 # Generated files
 static/generated/
 static/debug/
+.deps/
+.pytest_cache/
+.mypy_cache/
+htmlcov/
+.coverage
 
 # Python
 __pycache__/

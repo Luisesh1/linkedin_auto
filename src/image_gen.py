@@ -1,20 +1,51 @@
 """
 Image generation module using xAI Grok API.
-Generates anime-style professional images for LinkedIn posts.
+Generates professional images for LinkedIn posts.
 """
 
+from datetime import UTC, datetime
 import os
 import uuid
 
 import requests
-from openai import OpenAI
 
+from src.llm import get_image_model, get_text_model, get_xai_client
+from src.logging_utils import get_logger
 
-def _load_api_key() -> str:
-    import yaml
-    with open("config.yaml") as f:
-        cfg = yaml.safe_load(f)
-    return cfg["grok"]["api_key"]
+logger = get_logger(__name__)
+
+STYLE_DIRECTIONS = {
+    "editorial": {
+        "prompt": "Create a polished editorial illustration with magazine-quality composition.",
+        "composition_type": "editorial portrait",
+        "color_direction": "deep blues and soft neutrals",
+    },
+    "minimal": {
+        "prompt": "Create a minimal conceptual scene with clean geometry and negative space.",
+        "composition_type": "minimal concept",
+        "color_direction": "monochrome neutrals with one accent color",
+    },
+    "diagram": {
+        "prompt": "Create a concept art scene inspired by systems diagrams and abstract data flows.",
+        "composition_type": "abstract systems diagram",
+        "color_direction": "cyan, graphite and electric accents",
+    },
+    "cinematic": {
+        "prompt": "Create a cinematic business scene with dramatic lighting and layered depth.",
+        "composition_type": "cinematic tableau",
+        "color_direction": "teal, steel and warm highlights",
+    },
+    "illustrated": {
+        "prompt": "Create an illustrated narrative scene with expressive shapes and modern editorial energy.",
+        "composition_type": "narrative illustration",
+        "color_direction": "warm earth tones and vivid accents",
+    },
+    "anime": {
+        "prompt": "Create a refined anime-inspired professional illustration with strong visual storytelling.",
+        "composition_type": "anime-inspired illustration",
+        "color_direction": "vibrant cool tones with controlled contrast",
+    },
+}
 
 
 def _category_text(category_cfg: dict | None, key: str, fallback: str) -> str:
@@ -24,19 +55,23 @@ def _category_text(category_cfg: dict | None, key: str, fallback: str) -> str:
     return value or fallback
 
 
-def generate_image(topic: str, category_cfg: dict | None = None) -> dict:
+def generate_image(content_input, category_cfg: dict | None = None) -> dict:
     """
-    Generate a sober/elegant anime-style image for the given topic.
+    Generate a professional image for the given topic or content brief.
 
     Returns:
         dict with keys: image_url (local preview URL), image_path (filesystem path)
     """
-    api_key = _load_api_key()
-
-    client = OpenAI(
-        api_key=api_key,
-        base_url="https://api.x.ai/v1",
-    )
+    client = get_xai_client()
+    if isinstance(content_input, dict):
+        topic = str(content_input.get("topic", "")).strip()
+        visual_style = str(content_input.get("visual_style", "editorial")).strip() or "editorial"
+        angle = str(content_input.get("angle", "")).strip()
+    else:
+        topic = str(content_input).strip()
+        visual_style = "editorial"
+        angle = ""
+    style_cfg = STYLE_DIRECTIONS.get(visual_style, STYLE_DIRECTIONS["editorial"])
 
     image_instruction = _category_text(
         category_cfg,
@@ -45,14 +80,16 @@ def generate_image(topic: str, category_cfg: dict | None = None) -> dict:
     )
     prompt = (
         f"Topic: {topic}. "
+        f"Editorial angle: {angle or topic}. "
+        f"Visual style: {visual_style}. "
         f"Category style objective: {image_instruction} "
-        "Create a professional anime-style illustration with strong visual storytelling. "
+        f"{style_cfg['prompt']} "
         "Clean composition, polished lighting, no text or typography, suitable for a LinkedIn post. "
         "High quality, detailed illustration."
     )
 
     response = client.images.generate(
-        model="grok-imagine-image",
+        model=get_image_model(),
         prompt=prompt,
         n=1,
     )
@@ -71,26 +108,29 @@ def generate_image(topic: str, category_cfg: dict | None = None) -> dict:
         f.write(img_resp.content)
 
     # Generate a short description of the image for the DB record
-    description = _describe_image(client, prompt, topic)
+    description = _describe_image(client, prompt, topic, visual_style)
 
     return {
         "image_url": f"/static/generated/{img_filename}",
         "image_path": img_path,
         "prompt_used": prompt,
         "image_desc": description,
+        "visual_style": visual_style,
+        "composition_type": style_cfg["composition_type"],
+        "color_direction": style_cfg["color_direction"],
     }
 
 
-def _describe_image(client: OpenAI, prompt: str, topic: str) -> str:
+def _describe_image(client, prompt: str, topic: str, visual_style: str) -> str:
     """Ask Grok to write a concise description of the generated image."""
     try:
         resp = client.chat.completions.create(
-            model="grok-3",
+            model=get_text_model(),
             messages=[
                 {
                     "role": "user",
                     "content": (
-                        f"Write a concise 1-2 sentence description (in Spanish) of an anime-style "
+                        f"Write a concise 1-2 sentence description (in Spanish) of a {visual_style}-style "
                         f"illustration generated with this prompt:\n\n\"{prompt}\"\n\n"
                         f"The image represents the concept: {topic}. "
                         "Describe the visual composition, dominant colors, and mood."
@@ -100,5 +140,10 @@ def _describe_image(client: OpenAI, prompt: str, topic: str) -> str:
             max_tokens=120,
         )
         return resp.choices[0].message.content.strip()
-    except Exception:
-        return f"Ilustración anime estilo Ghost in the Shell representando: {topic}."
+    except Exception as exc:
+        logger.info(
+            "No se pudo describir la imagen generada",
+            extra={"event": "image.describe_fallback"},
+            exc_info=exc,
+        )
+        return f"Ilustración generada el {datetime.now(UTC).date().isoformat()} representando: {topic}."

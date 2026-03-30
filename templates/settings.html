@@ -6,7 +6,7 @@
   <title>Configuración del Pipeline</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" />
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/style.css" />
+  <link rel="stylesheet" href="/static/css/style.css?v=20260314-premium" />
 </head>
 <body data-page="settings">
 
@@ -23,16 +23,24 @@
         <a href="/settings" class="top-nav-link active">Configuración</a>
       </div>
     </div>
-    <div id="auth-banner" class="d-flex align-items-center gap-2">
-      <span id="auth-status-text" class="badge fs-6 px-3 py-2">
-        <i class="bi bi-clock-history me-1"></i> Verificando...
-      </span>
-      <button id="login-btn" class="btn btn-sm btn-outline-light d-none" onclick="startLogin()">
-        <i class="bi bi-box-arrow-in-right me-1"></i> Iniciar sesión
-      </button>
-      <button id="disconnect-btn" class="btn btn-sm btn-outline-danger d-none" onclick="disconnectLinkedIn()">
-        <i class="bi bi-x-circle me-1"></i> Cerrar sesión
-      </button>
+    <div class="d-flex align-items-center gap-3">
+      <div id="auth-banner" class="d-flex align-items-center gap-2">
+        <span id="auth-status-text" class="badge fs-6 px-3 py-2">
+          <i class="bi bi-clock-history me-1"></i> Verificando...
+        </span>
+        <button id="login-btn" class="btn btn-sm btn-outline-light d-none" onclick="startLogin()">
+          <i class="bi bi-box-arrow-in-right me-1"></i> Iniciar sesión
+        </button>
+        <button id="disconnect-btn" class="btn btn-sm btn-outline-danger d-none" onclick="disconnectLinkedIn()">
+          <i class="bi bi-x-circle me-1"></i> Cerrar sesión
+        </button>
+      </div>
+      <div class="d-flex align-items-center gap-2">
+        <span class="text-light small d-none d-md-inline">{{ app_bootstrap.currentUser }}</span>
+        <button class="btn btn-sm btn-outline-light" onclick="logoutApp()">
+          <i class="bi bi-box-arrow-right me-1"></i> Salir
+        </button>
+      </div>
     </div>
   </div>
 </nav>
@@ -83,58 +91,331 @@
     </div>
     <div class="col-lg-8">
       <div class="card shadow-sm">
-        <div class="card-header fw-semibold">
-          <i class="bi bi-sliders me-2"></i>Editor de configuración
+        <div class="card-header fw-semibold d-flex align-items-center justify-content-between">
+          <span><i class="bi bi-sliders me-2"></i>Editor de categoría</span>
+          <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-outline-secondary" onclick="duplicateCategory()" title="Duplicar categoría">
+              <i class="bi bi-copy me-1"></i>Duplicar
+            </button>
+            <button class="btn btn-sm btn-outline-secondary" onclick="createNewCategory()">
+              <i class="bi bi-file-earmark-plus me-1"></i>Nueva
+            </button>
+          </div>
         </div>
         <div class="card-body">
           <div id="settings-alert" class="alert d-none"></div>
           <input type="hidden" id="category-id" />
 
-          <div class="row g-3">
-            <div class="col-md-6">
-              <label class="form-label fw-semibold">Nombre de la categoría</label>
-              <input id="category-name" class="form-control" placeholder="historyTime" />
+          <!-- Basic info -->
+          <div class="row g-3 mb-3">
+            <div class="col-md-5">
+              <label class="form-label fw-semibold small">Nombre</label>
+              <input id="category-name" class="form-control" placeholder="p.ej. historyTime" />
             </div>
-            <div class="col-md-6">
-              <label class="form-label fw-semibold">Descripción interna</label>
-              <input id="category-description" class="form-control" placeholder="Resumen rápido del objetivo de esta categoría" />
+            <div class="col-md-7">
+              <label class="form-label fw-semibold small">Descripción interna</label>
+              <input id="category-description" class="form-control" placeholder="Objetivo de esta categoría" />
             </div>
           </div>
-
-          <div class="form-check form-switch mt-3">
+          <div class="form-check form-switch mb-4">
             <input class="form-check-input" type="checkbox" id="category-default">
-            <label class="form-check-label" for="category-default">Usar como categoría predeterminada</label>
+            <label class="form-check-label small" for="category-default">Usar como categoría predeterminada</label>
           </div>
 
-          <div class="mt-4">
-            <label class="form-label fw-semibold">Investigar tendencias</label>
-            <textarea id="category-trends-prompt" class="form-control settings-textarea" rows="4"></textarea>
+          <!-- Style presets -->
+          <div class="mb-4">
+            <label class="form-label fw-semibold small d-block mb-2">
+              <i class="bi bi-magic me-1"></i>Estilo rápido
+              <small class="text-muted fw-normal ms-1">— rellena los prompts automáticamente</small>
+            </label>
+            <div class="d-flex flex-wrap gap-2" id="preset-buttons">
+              <button type="button" class="btn btn-sm btn-outline-secondary preset-btn" onclick="applyPreset('professional')">
+                <i class="bi bi-briefcase-fill me-1"></i>Profesional
+              </button>
+              <button type="button" class="btn btn-sm btn-outline-secondary preset-btn" onclick="applyPreset('storytelling')">
+                <i class="bi bi-book-fill me-1"></i>Historia
+              </button>
+              <button type="button" class="btn btn-sm btn-outline-secondary preset-btn" onclick="applyPreset('technical')">
+                <i class="bi bi-cpu-fill me-1"></i>Técnico
+              </button>
+              <button type="button" class="btn btn-sm btn-outline-secondary preset-btn" onclick="applyPreset('opinion')">
+                <i class="bi bi-chat-quote-fill me-1"></i>Opinión
+              </button>
+              <button type="button" class="btn btn-sm btn-outline-secondary preset-btn" onclick="applyPreset('tutorial')">
+                <i class="bi bi-mortarboard-fill me-1"></i>Tutorial
+              </button>
+            </div>
           </div>
 
-          <div class="mt-3">
-            <label class="form-label fw-semibold">Revisar historial de posts</label>
-            <textarea id="category-history-prompt" class="form-control settings-textarea" rows="4"></textarea>
+          <!-- Content controls -->
+          <div class="settings-controls-grid mb-4">
+            <!-- Post length -->
+            <div class="settings-control-block">
+              <label class="form-label fw-semibold small mb-1">
+                <i class="bi bi-text-paragraph me-1"></i>Longitud del post
+                <span id="post-length-val" class="badge ms-1" style="background:#0a66c2;color:#fff">200 palabras</span>
+              </label>
+              <input type="range" class="form-range" id="category-post-length"
+                     min="80" max="400" step="10" value="200"
+                     oninput="document.getElementById('post-length-val').textContent=this.value+' palabras'">
+              <div class="d-flex justify-content-between">
+                <small class="text-muted">80</small>
+                <small class="text-muted">200</small>
+                <small class="text-muted">400</small>
+              </div>
+            </div>
+
+            <!-- Language -->
+            <div class="settings-control-block">
+              <label class="form-label fw-semibold small mb-2">
+                <i class="bi bi-translate me-1"></i>Idioma del post
+              </label>
+              <div class="btn-group w-100" role="group">
+                <input type="radio" class="btn-check" name="cat-lang" id="lang-auto" value="auto" checked>
+                <label class="btn btn-sm btn-outline-secondary" for="lang-auto">Auto</label>
+                <input type="radio" class="btn-check" name="cat-lang" id="lang-es" value="es">
+                <label class="btn btn-sm btn-outline-secondary" for="lang-es">Español</label>
+                <input type="radio" class="btn-check" name="cat-lang" id="lang-en" value="en">
+                <label class="btn btn-sm btn-outline-secondary" for="lang-en">English</label>
+              </div>
+            </div>
+
+            <!-- Hashtag count -->
+            <div class="settings-control-block">
+              <label class="form-label fw-semibold small mb-2">
+                <i class="bi bi-hash me-1"></i>Hashtags
+                <span id="hashtag-count-val" class="badge ms-1" style="background:#0a66c2;color:#fff">4</span>
+              </label>
+              <div class="d-flex align-items-center gap-2">
+                <button type="button" class="btn btn-sm btn-outline-secondary px-2"
+                        onclick="adjustHashtags(-1)">−</button>
+                <input type="range" class="form-range flex-grow-1" id="category-hashtag-count"
+                       min="0" max="10" step="1" value="4"
+                       oninput="document.getElementById('hashtag-count-val').textContent=this.value">
+                <button type="button" class="btn btn-sm btn-outline-secondary px-2"
+                        onclick="adjustHashtags(1)">+</button>
+              </div>
+            </div>
+
+            <!-- Emojis -->
+            <div class="settings-control-block d-flex align-items-center justify-content-between">
+              <label class="form-label fw-semibold small mb-0">
+                <i class="bi bi-emoji-smile me-1"></i>Emojis en el texto
+              </label>
+              <div class="form-check form-switch mb-0">
+                <input class="form-check-input" type="checkbox" id="category-use-emojis" style="cursor:pointer">
+              </div>
+            </div>
           </div>
 
-          <div class="mt-3">
-            <label class="form-label fw-semibold">Generar copy con Claude AI</label>
-            <textarea id="category-content-prompt" class="form-control settings-textarea" rows="5"></textarea>
+          <div class="card border-0 bg-light mb-4">
+            <div class="card-body">
+              <label class="form-label fw-semibold small d-block mb-3">
+                <i class="bi bi-stars me-1"></i>Originalidad y dirección editorial
+              </label>
+              <div class="settings-controls-grid mb-3">
+                <div class="settings-control-block">
+                  <label class="form-label fw-semibold small mb-1">
+                    <i class="bi bi-lightbulb me-1"></i>Nivel de originalidad
+                    <span id="originality-level-val" class="badge ms-1" style="background:#0a66c2;color:#fff">3/5</span>
+                  </label>
+                  <input type="range" class="form-range" id="category-originality-level"
+                         min="1" max="5" step="1" value="3"
+                         oninput="document.getElementById('originality-level-val').textContent=this.value+'/5'">
+                </div>
+
+                <div class="settings-control-block">
+                  <label class="form-label fw-semibold small mb-2">
+                    <i class="bi bi-bar-chart-line me-1"></i>Modo de evidencia
+                  </label>
+                  <select id="category-evidence-mode" class="form-select form-select-sm">
+                    <option value="balanced">Balanceado</option>
+                    <option value="examples">Con ejemplos</option>
+                    <option value="data">Con datos</option>
+                    <option value="story">Narrativo</option>
+                  </select>
+                </div>
+
+                <div class="settings-control-block">
+                  <label class="form-label fw-semibold small mb-2">
+                    <i class="bi bi-lightning-charge me-1"></i>Estilo de hook
+                  </label>
+                  <select id="category-hook-style" class="form-select form-select-sm">
+                    <option value="auto">Auto</option>
+                    <option value="question">Pregunta</option>
+                    <option value="contrarian">Contrarian</option>
+                    <option value="story">Historia</option>
+                    <option value="bold">Directo</option>
+                  </select>
+                </div>
+
+                <div class="settings-control-block">
+                  <label class="form-label fw-semibold small mb-2">
+                    <i class="bi bi-chat-left-text me-1"></i>Estilo de CTA
+                  </label>
+                  <select id="category-cta-style" class="form-select form-select-sm">
+                    <option value="auto">Auto</option>
+                    <option value="question">Pregunta</option>
+                    <option value="debate">Debate</option>
+                    <option value="reflection">Reflexión</option>
+                    <option value="action">Acción</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="mb-3">
+                <label class="form-label fw-semibold small d-block mb-1">
+                  <i class="bi bi-bullseye me-1"></i>Audiencia principal
+                </label>
+                <input id="category-audience-focus" class="form-control form-control-sm"
+                       placeholder="p.ej. líderes de producto, recruiters tech, founders B2B" />
+              </div>
+
+              <div class="mb-3">
+                <label class="form-label fw-semibold small d-block mb-2">
+                  <i class="bi bi-layout-text-window-reverse me-1"></i>Formatos preferidos
+                </label>
+                <div class="d-flex flex-wrap gap-2" id="preferred-format-buttons">
+                  <button type="button" class="btn btn-sm btn-outline-secondary pref-format-btn" data-format="insight" onclick="togglePreferredFormat('insight')">Insight</button>
+                  <button type="button" class="btn btn-sm btn-outline-secondary pref-format-btn" data-format="storytelling" onclick="togglePreferredFormat('storytelling')">Storytelling</button>
+                  <button type="button" class="btn btn-sm btn-outline-secondary pref-format-btn" data-format="opinion" onclick="togglePreferredFormat('opinion')">Opinión</button>
+                  <button type="button" class="btn btn-sm btn-outline-secondary pref-format-btn" data-format="tutorial" onclick="togglePreferredFormat('tutorial')">Tutorial</button>
+                  <button type="button" class="btn btn-sm btn-outline-secondary pref-format-btn" data-format="listicle" onclick="togglePreferredFormat('listicle')">Lista</button>
+                  <button type="button" class="btn btn-sm btn-outline-secondary pref-format-btn" data-format="case-study" onclick="togglePreferredFormat('case-study')">Caso</button>
+                </div>
+              </div>
+
+              <div>
+                <label class="form-label fw-semibold small d-block mb-2">
+                  <i class="bi bi-palette-fill me-1"></i>Estilos visuales preferidos
+                </label>
+                <div class="d-flex flex-wrap gap-2" id="preferred-style-buttons">
+                  <button type="button" class="btn btn-sm btn-outline-secondary pref-style-btn" data-style="editorial" onclick="togglePreferredVisualStyle('editorial')">Editorial</button>
+                  <button type="button" class="btn btn-sm btn-outline-secondary pref-style-btn" data-style="minimal" onclick="togglePreferredVisualStyle('minimal')">Minimal</button>
+                  <button type="button" class="btn btn-sm btn-outline-secondary pref-style-btn" data-style="diagram" onclick="togglePreferredVisualStyle('diagram')">Diagram</button>
+                  <button type="button" class="btn btn-sm btn-outline-secondary pref-style-btn" data-style="cinematic" onclick="togglePreferredVisualStyle('cinematic')">Cinematic</button>
+                  <button type="button" class="btn btn-sm btn-outline-secondary pref-style-btn" data-style="illustrated" onclick="togglePreferredVisualStyle('illustrated')">Illustrated</button>
+                  <button type="button" class="btn btn-sm btn-outline-secondary pref-style-btn" data-style="anime" onclick="togglePreferredVisualStyle('anime')">Anime</button>
+                </div>
+              </div>
+            </div>
           </div>
 
-          <div class="mt-3">
-            <label class="form-label fw-semibold">Generar imagen con Grok</label>
-            <textarea id="category-image-prompt" class="form-control settings-textarea" rows="4"></textarea>
+          <!-- Topic keywords -->
+          <div class="mb-4">
+            <label class="form-label fw-semibold small d-block mb-1">
+              <i class="bi bi-tags-fill me-1"></i>Keywords de foco
+              <small class="text-muted fw-normal ms-1">— el investigador priorizará estos temas</small>
+            </label>
+            <div id="cat-keywords-list" class="d-flex flex-wrap gap-1 mb-2"></div>
+            <div class="d-flex gap-2">
+              <input type="text" class="form-control form-control-sm" id="cat-keyword-input"
+                     placeholder="p.ej. blockchain" style="max-width:200px"
+                     onkeydown="if(event.key==='Enter'){event.preventDefault();addCatKeyword();}">
+              <button class="btn btn-sm btn-outline-secondary" onclick="addCatKeyword()">
+                <i class="bi bi-plus-lg"></i>
+              </button>
+            </div>
           </div>
 
-          <div class="d-flex gap-2 flex-wrap mt-4">
+          <!-- Negative prompt (antiprompt) -->
+          <div class="mb-4">
+            <label class="form-label fw-semibold small d-block mb-1">
+              <i class="bi bi-slash-circle me-1 text-danger"></i>Antiprompt
+              <small class="text-muted fw-normal ms-1">— instrucciones de qué evitar/excluir en el contenido</small>
+            </label>
+            <textarea id="category-negative-prompt" class="form-control settings-textarea" rows="3"
+              placeholder="p.ej. No menciones competidores, evita lenguaje corporativo, no uses estadísticas sin fuente..."></textarea>
+          </div>
+
+          <!-- Fallback topics -->
+          <div class="mb-4">
+            <label class="form-label fw-semibold small d-block mb-1">
+              <i class="bi bi-journal-bookmark-fill me-1 text-info"></i>Temas de fallback
+              <small class="text-muted fw-normal ms-1">— lista de reserva si la investigación de tendencias falla</small>
+            </label>
+            <div id="cat-fallback-list" class="d-flex flex-wrap gap-1 mb-2"></div>
+            <div class="d-flex gap-2">
+              <input type="text" class="form-control form-control-sm" id="cat-fallback-input"
+                     placeholder="p.ej. Inteligencia artificial en RRHH" style="max-width:300px"
+                     onkeydown="if(event.key==='Enter'){event.preventDefault();addCatFallback();}">
+              <button class="btn btn-sm btn-outline-secondary" onclick="addCatFallback()">
+                <i class="bi bi-plus-lg"></i>
+              </button>
+            </div>
+          </div>
+
+          <!-- Advanced prompts (accordion) -->
+          <div class="accordion mb-4" id="prompts-accordion">
+            <div class="accordion-item">
+              <h2 class="accordion-header">
+                <button class="accordion-button collapsed py-2" type="button"
+                        data-bs-toggle="collapse" data-bs-target="#prompt-trends">
+                  <i class="bi bi-graph-up-arrow me-2 text-primary"></i>
+                  <span class="small fw-semibold">Prompt: Investigar tendencias</span>
+                </button>
+              </h2>
+              <div id="prompt-trends" class="accordion-collapse collapse" data-bs-parent="#prompts-accordion">
+                <div class="accordion-body pt-2">
+                  <small class="text-muted d-block mb-2">Instrucciones para filtrar/priorizar los temas de tendencia.</small>
+                  <textarea id="category-trends-prompt" class="form-control settings-textarea" rows="4"></textarea>
+                </div>
+              </div>
+            </div>
+            <div class="accordion-item">
+              <h2 class="accordion-header">
+                <button class="accordion-button collapsed py-2" type="button"
+                        data-bs-toggle="collapse" data-bs-target="#prompt-history">
+                  <i class="bi bi-clock-history me-2 text-secondary"></i>
+                  <span class="small fw-semibold">Prompt: Revisar historial</span>
+                </button>
+              </h2>
+              <div id="prompt-history" class="accordion-collapse collapse" data-bs-parent="#prompts-accordion">
+                <div class="accordion-body pt-2">
+                  <small class="text-muted d-block mb-2">Cómo usar el historial de posts previos para evitar repetición.</small>
+                  <textarea id="category-history-prompt" class="form-control settings-textarea" rows="4"></textarea>
+                </div>
+              </div>
+            </div>
+            <div class="accordion-item">
+              <h2 class="accordion-header">
+                <button class="accordion-button collapsed py-2" type="button"
+                        data-bs-toggle="collapse" data-bs-target="#prompt-content">
+                  <i class="bi bi-pencil-square me-2 text-success"></i>
+                  <span class="small fw-semibold">Prompt: Generar copy</span>
+                </button>
+              </h2>
+              <div id="prompt-content" class="accordion-collapse collapse" data-bs-parent="#prompts-accordion">
+                <div class="accordion-body pt-2">
+                  <small class="text-muted d-block mb-2">Estilo, estructura y tono del texto del post.</small>
+                  <textarea id="category-content-prompt" class="form-control settings-textarea" rows="5"></textarea>
+                </div>
+              </div>
+            </div>
+            <div class="accordion-item">
+              <h2 class="accordion-header">
+                <button class="accordion-button collapsed py-2" type="button"
+                        data-bs-toggle="collapse" data-bs-target="#prompt-image">
+                  <i class="bi bi-image me-2 text-warning"></i>
+                  <span class="small fw-semibold">Prompt: Generar imagen</span>
+                </button>
+              </h2>
+              <div id="prompt-image" class="accordion-collapse collapse" data-bs-parent="#prompts-accordion">
+                <div class="accordion-body pt-2">
+                  <small class="text-muted d-block mb-2">Estilo visual y composición de la imagen generada con Grok.</small>
+                  <textarea id="category-image-prompt" class="form-control settings-textarea" rows="4"></textarea>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Actions -->
+          <div class="d-flex gap-2 flex-wrap">
             <button class="btn btn-primary" onclick="saveCategorySettings()">
               <i class="bi bi-floppy-fill me-2"></i>Guardar categoría
             </button>
             <button class="btn btn-outline-danger" id="delete-category-btn" onclick="deleteCurrentCategory()">
               <i class="bi bi-trash3 me-2"></i>Eliminar
-            </button>
-            <button class="btn btn-outline-secondary" onclick="createNewCategory()">
-              <i class="bi bi-file-earmark-plus me-2"></i>Limpiar formulario
             </button>
           </div>
         </div>
@@ -144,6 +425,9 @@
 </main>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-<script src="/static/js/app.js"></script>
+<script>
+  window.APP_BOOTSTRAP = {{ app_bootstrap|tojson }};
+</script>
+<script src="/static/js/app.js?v=20260317-state"></script>
 </body>
 </html>
