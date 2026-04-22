@@ -12,8 +12,8 @@ from pathlib import Path
 import yaml
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-CONFIG_PATH = BASE_DIR / "config.yaml"
-ENV_PATH = BASE_DIR / ".env"
+CONFIG_PATH = Path(os.environ.get("APP_CONFIG_PATH", BASE_DIR / "config.yaml")).expanduser()
+ENV_PATH = Path(os.environ.get("APP_ENV_PATH", BASE_DIR / ".env")).expanduser()
 
 DEFAULTS = {
     "linkedin": {
@@ -39,7 +39,7 @@ DEFAULTS = {
         "admin_username": "admin",
         "admin_password": "",
         "admin_password_hash": "",
-        "session_timeout_minutes": 480,
+        "session_timeout_minutes": 43200,
         "max_login_attempts": 5,
         "login_window_minutes": 15,
         "lockout_minutes": 15,
@@ -48,6 +48,8 @@ DEFAULTS = {
     },
     "storage": {
         "db_path": str(BASE_DIR / "posts.db"),
+        "linkedin_session_dir": str(BASE_DIR / "linkedin_session"),
+        "linkedin_history_file": str(BASE_DIR / "post_history.json"),
     },
     "linkedin_browser": {
         "locale": "es-ES",
@@ -81,6 +83,8 @@ ENV_MAP = {
     "SECURITY_REQUIRE_HTTPS_COOKIES": ("security", "require_https_cookies"),
     "SECURITY_MAX_CONTENT_LENGTH_MB": ("security", "max_content_length_mb"),
     "DB_PATH": ("storage", "db_path"),
+    "LINKEDIN_SESSION_DIR": ("storage", "linkedin_session_dir"),
+    "LINKEDIN_HISTORY_FILE": ("storage", "linkedin_history_file"),
     "LINKEDIN_LOCALE": ("linkedin_browser", "locale"),
     "LINKEDIN_TIMEZONE": ("linkedin_browser", "timezone_id"),
     "LINKEDIN_FEED_TIMEOUT_MS": ("linkedin_browser", "feed_timeout_ms"),
@@ -172,4 +176,5 @@ def update_yaml_setting(section: str, key: str, value) -> dict:
 def ensure_local_config() -> None:
     example_path = BASE_DIR / "config.yaml.example"
     if not CONFIG_PATH.exists() and example_path.exists():
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         CONFIG_PATH.write_text(example_path.read_text(encoding="utf-8"), encoding="utf-8")

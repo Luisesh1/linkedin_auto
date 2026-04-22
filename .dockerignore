@@ -10,6 +10,7 @@ __pycache__
 *.pyd
 venv
 .env
+data
 posts.db
 post_history.json
 linkedin_session

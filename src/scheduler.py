@@ -167,6 +167,7 @@ def _loop():
     # Import here to avoid circular imports at module load time
     from src import db, linkedin
 
+    cleanup_counter = 0
     while not _stop_event.is_set():
         try:
             _tick(db, linkedin)
@@ -179,6 +180,16 @@ def _loop():
                 "Unexpected error in metrics-collection tick",
                 extra={"event": "scheduler.metrics_tick_error"},
             )
+        cleanup_counter += 1
+        if cleanup_counter >= 10:  # every ~5 minutes (10 * 30s)
+            cleanup_counter = 0
+            try:
+                db.cleanup_expired_state()
+            except Exception:
+                logger.exception(
+                    "Unexpected error in cleanup tick",
+                    extra={"event": "scheduler.cleanup_tick_error"},
+                )
         _stop_event.wait(30)  # check every 30 seconds
 
 

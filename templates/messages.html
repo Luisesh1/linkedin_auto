@@ -181,9 +181,14 @@
 
     <div class="col-xl-8">
       <div class="card shadow-sm mb-4">
-        <div class="card-header fw-semibold d-flex justify-content-between align-items-center">
+        <div class="card-header fw-semibold d-flex justify-content-between align-items-center gap-2 flex-wrap">
           <span><i class="bi bi-chat-left-text me-2"></i>Inbox</span>
-          <input id="msg-search" class="form-control form-control-sm" style="max-width:280px" placeholder="Buscar contacto o contexto">
+          <div class="d-flex gap-2 align-items-center flex-wrap">
+            <input id="msg-search" class="form-control form-control-sm" style="max-width:260px" placeholder="Buscar contacto o contexto">
+            <button id="btn-sync-inbox" type="button" class="btn btn-sm btn-outline-primary" onclick="syncLinkedInInbox(false)">
+              <i class="bi bi-arrow-clockwise me-1"></i>Sincronizar bandeja
+            </button>
+          </div>
         </div>
         <div class="card-body p-0">
           <div class="message-inbox-layout">

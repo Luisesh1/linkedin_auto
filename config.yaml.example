@@ -21,7 +21,7 @@ security:
   admin_username: "admin"
   admin_password: ""
   admin_password_hash: "PON_AQUI_UN_HASH_DE_WERKZEUG"
-  session_timeout_minutes: 480
+  session_timeout_minutes: 43200
   max_login_attempts: 5
   login_window_minutes: 15
   lockout_minutes: 15
@@ -30,6 +30,8 @@ security:
 
 storage:
   db_path: "posts.db"
+  linkedin_session_dir: "linkedin_session"
+  linkedin_history_file: "post_history.json"
 
 linkedin_browser:
   locale: "es-ES"

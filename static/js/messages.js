@@ -241,20 +241,76 @@ function renderThreadList() {
     renderSimThreadOptions();
     return;
   }
-  root.innerHTML = messageThreads.map((thread) => `
-    <button type="button" class="message-thread-row ${thread.id === selectedThreadId ? "active" : ""}" onclick="openMessageThread(${thread.id})">
-      <div class="message-thread-row-head">
-        <strong>${escapeHtml(thread.contact_name || "Contacto")}</strong>
-        <span class="badge rounded-pill ${stateBadgeClass(thread.state)}">${escapeHtml(intentLabel(thread.intent))}</span>
-      </div>
-      <div class="small text-muted text-start">${escapeHtml(thread.latest_snippet || thread.crm_summary || "Sin snippet reciente")}</div>
-      <div class="message-thread-row-meta">
-        <span>${escapeHtml(thread.next_action || "Sin accion")}</span>
-        <span>${escapeHtml(safeFmtDate(thread.updated_at))}</span>
-      </div>
-    </button>
-  `).join("");
+  root.innerHTML = messageThreads.map((thread) => {
+    const avatar = thread.contact_avatar_url
+      ? `<img src="${escapeHtml(thread.contact_avatar_url)}" alt="" class="message-thread-avatar" loading="lazy" />`
+      : `<div class="message-thread-avatar message-thread-avatar-fallback">${escapeHtml((thread.contact_name || "C").slice(0, 1).toUpperCase())}</div>`;
+    const unread = Number(thread.unread_count || 0);
+    const unreadBadge = unread > 0
+      ? `<span class="badge rounded-pill bg-danger ms-1">${unread}</span>`
+      : "";
+    const lastStamp = thread.last_message_at || thread.updated_at;
+    return `
+      <button type="button" class="message-thread-row ${thread.id === selectedThreadId ? "active" : ""} ${unread > 0 ? "is-unread" : ""}" onclick="openMessageThread(${thread.id})">
+        ${avatar}
+        <div class="message-thread-row-body">
+          <div class="message-thread-row-head">
+            <strong>${escapeHtml(thread.contact_name || "Contacto")}</strong>
+            <span class="message-thread-row-stamp text-muted small">${escapeHtml(safeFmtDate(lastStamp))}</span>
+          </div>
+          <div class="small text-muted text-start message-thread-row-snippet">${escapeHtml(thread.latest_snippet || thread.crm_summary || "Sin snippet reciente")}</div>
+          <div class="message-thread-row-meta">
+            <span class="badge rounded-pill ${stateBadgeClass(thread.state)}">${escapeHtml(intentLabel(thread.intent))}</span>
+            ${unreadBadge}
+          </div>
+        </div>
+      </button>
+    `;
+  }).join("");
   renderSimThreadOptions();
+}
+
+async function syncLinkedInInbox(force = false) {
+  const btn = document.getElementById("btn-sync-inbox");
+  if (btn) { btn.disabled = true; btn.dataset.prevHtml = btn.innerHTML; btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Sincronizando…'; }
+  try {
+    const res = await apiFetch("/api/messages/inbox/sync", { method: "POST", body: JSON.stringify({ force }) });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 429) {
+      showGlobalError(`Espera ${data.retry_in_seconds || 60}s antes de volver a sincronizar la bandeja.`);
+    } else if (!data.ok) {
+      showGlobalError(data.error || "No se pudo sincronizar la bandeja.");
+    } else {
+      messageThreads = data.threads || messageThreads;
+      renderThreadList();
+    }
+  } catch (error) {
+    showGlobalError(error.message || "Error sincronizando la bandeja.");
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = btn.dataset.prevHtml || "Sincronizar bandeja"; }
+  }
+}
+
+async function syncCurrentThread(force = false) {
+  if (!selectedThreadId) return;
+  const btn = document.getElementById("btn-sync-thread");
+  if (btn) { btn.disabled = true; btn.dataset.prevHtml = btn.innerHTML; btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Sincronizando…'; }
+  try {
+    const res = await apiFetch(`/api/messages/conversations/${selectedThreadId}/sync`, { method: "POST", body: JSON.stringify({ force }) });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 429) {
+      showGlobalError(`Espera ${data.retry_in_seconds || 30}s antes de resincronizar este hilo.`);
+    } else if (!data.ok) {
+      showGlobalError(data.error || "No se pudo sincronizar la conversación.");
+    } else {
+      currentMessageThread = data.thread || currentMessageThread;
+      renderThreadDetail(data.thread || currentMessageThread || {}, data.events || [], {});
+    }
+  } catch (error) {
+    showGlobalError(error.message || "Error sincronizando la conversación.");
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = btn.dataset.prevHtml || "Sincronizar"; }
+  }
 }
 
 function renderSimThreadOptions() {
@@ -282,6 +338,8 @@ async function openMessageThread(threadId) {
   selectedThreadId = threadId;
   renderThreadList();
   await loadConversation(threadId);
+  // Sync incremental on demand (throttled server-side)
+  syncCurrentThread(false).catch(() => {});
 }
 
 async function openThreadFromReview(threadId) {
@@ -306,18 +364,32 @@ function renderThreadDetail(thread, events, profile) {
     renderEmptyThreadDetail();
     return;
   }
+  const headerAvatar = thread.contact_avatar_url
+    ? `<img src="${escapeHtml(thread.contact_avatar_url)}" alt="" class="message-detail-avatar" loading="lazy" />`
+    : `<div class="message-detail-avatar message-thread-avatar-fallback">${escapeHtml((thread.contact_name || "C").slice(0, 1).toUpperCase())}</div>`;
+  const profileUrl = thread.contact_profile_url || "";
+  const profileLink = profileUrl
+    ? `<a href="${escapeHtml(profileUrl)}" target="_blank" rel="noopener" class="small">Ver perfil</a>`
+    : "";
   root.innerHTML = `
     <div class="message-detail-shell">
       <div class="message-detail-header">
-        <div>
-          <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
-            <h2 class="h5 mb-0">${escapeHtml(thread.contact_name || "Contacto")}</h2>
-            <span class="badge rounded-pill ${stateBadgeClass(thread.state)}">${escapeHtml(thread.state || "new")}</span>
-            <span class="badge rounded-pill bg-light text-dark border">${escapeHtml(intentLabel(thread.intent))}</span>
+        <div class="d-flex gap-3 align-items-start">
+          ${headerAvatar}
+          <div>
+            <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+              <h2 class="h5 mb-0">${escapeHtml(thread.contact_name || "Contacto")}</h2>
+              <span class="badge rounded-pill ${stateBadgeClass(thread.state)}">${escapeHtml(thread.state || "new")}</span>
+              <span class="badge rounded-pill bg-light text-dark border">${escapeHtml(intentLabel(thread.intent))}</span>
+              ${profileLink}
+            </div>
+            <p class="text-muted small mb-0">${escapeHtml(profile.summary || thread.crm_summary || "Sin resumen guardado.")}</p>
           </div>
-          <p class="text-muted small mb-0">${escapeHtml(profile.summary || thread.crm_summary || "Sin resumen guardado.")}</p>
         </div>
         <div class="d-flex flex-wrap gap-2">
+          <button id="btn-sync-thread" class="btn btn-sm btn-outline-primary" onclick="syncCurrentThread(true)">
+            <i class="bi bi-arrow-clockwise me-1"></i>Sincronizar
+          </button>
           <button class="btn btn-sm btn-outline-secondary" onclick="togglePauseThread()">
             <i class="bi bi-${thread.paused ? "play" : "pause"}-fill me-1"></i>${thread.paused ? "Reanudar" : "Pausar"}
           </button>

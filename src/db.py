@@ -6,11 +6,15 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
 from src.config import get_setting
+
+_SAFE_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 RANDOM_CATEGORY_NAME = "random"
 
@@ -655,17 +659,38 @@ DEFAULT_PIPELINE_CATEGORIES = [
 
 
 def _get_conn():
-    conn = sqlite3.connect(_db_path())
+    conn = sqlite3.connect(_db_path(), timeout=10)
     conn.row_factory = sqlite3.Row
     return conn
 
 
+@contextmanager
+def _tx():
+    """Run SELECT+UPDATE inside an atomic transaction (BEGIN IMMEDIATE)."""
+    conn = _get_conn()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def _column_exists(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+    if not _SAFE_IDENT.match(table_name):
+        raise ValueError(f"invalid table name: {table_name!r}")
     rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
     return any(str(row["name"]) == column_name for row in rows)
 
 
 def _add_column_if_missing(conn: sqlite3.Connection, table_name: str, column_name: str, column_def: str) -> None:
+    if not _SAFE_IDENT.match(table_name):
+        raise ValueError(f"invalid table name: {table_name!r}")
+    if not _SAFE_IDENT.match(column_name):
+        raise ValueError(f"invalid column name: {column_name!r}")
     if _column_exists(conn, table_name, column_name):
         return
     conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_def}")
@@ -674,6 +699,8 @@ def _add_column_if_missing(conn: sqlite3.Connection, table_name: str, column_nam
 def init_db():
     """Create tables if they don't exist."""
     with _get_conn() as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS posts (
@@ -869,6 +896,11 @@ def init_db():
             )
             """
         )
+        for col_name, col_def in [
+            ("contact_avatar_url", "TEXT NOT NULL DEFAULT ''"),
+            ("last_synced_at", "TEXT NOT NULL DEFAULT ''"),
+        ]:
+            _add_column_if_missing(conn, "message_threads", col_name, col_def)
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS message_events (
@@ -1023,6 +1055,26 @@ def cleanup_expired_state() -> None:
         )
         conn.execute("DELETE FROM pipeline_sessions WHERE expires_at < ?", (now,))
         conn.commit()
+
+
+def recover_stale_workers() -> dict:
+    """Mark jobs/sessions left in running/queued/pending as 'error' after a restart."""
+    now = _utc_now()
+    with _tx() as conn:
+        n_sessions = conn.execute(
+            "UPDATE pipeline_sessions "
+            "SET status='error', updated_at=?, "
+            "payload=json_set(COALESCE(payload,'{}'), '$.recovery_reason', 'proceso reiniciado') "
+            "WHERE status='running'",
+            (now,),
+        ).rowcount
+        n_jobs = conn.execute(
+            "UPDATE jobs SET status='error', updated_at=?, "
+            "message='Interrumpido por reinicio del proceso' "
+            "WHERE status IN ('queued', 'running', 'pending')",
+            (now,),
+        ).rowcount
+    return {"sessions": int(n_sessions or 0), "jobs": int(n_jobs or 0)}
 
 
 def _seed_default_categories(conn):
@@ -1478,19 +1530,21 @@ def update_job(
     payload: dict | None = None,
     result: dict | None = None,
 ) -> dict | None:
-    current = get_job(job_id)
-    if not current:
-        return None
+    now = _utc_now()
+    with _tx() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if not row:
+            return None
+        current = dict(row)
+        current["payload"] = json.loads(current.get("payload") or "{}")
+        current["result"] = json.loads(current.get("result") or "{}")
 
-    merged_payload = current["payload"]
-    if payload:
-        merged_payload = {**merged_payload, **payload}
+        merged_payload = {**current["payload"], **payload} if payload else current["payload"]
+        merged_result = {**current["result"], **result} if result else current["result"]
+        new_status = status or current["status"]
+        new_message = message if message is not None else current["message"]
 
-    merged_result = current["result"]
-    if result:
-        merged_result = {**merged_result, **result}
-
-    with _get_conn() as conn:
         conn.execute(
             """
             UPDATE jobs
@@ -1498,20 +1552,25 @@ def update_job(
             WHERE id=?
             """,
             (
-                status or current["status"],
-                message if message is not None else current["message"],
+                new_status,
+                new_message,
                 json.dumps(merged_payload),
                 json.dumps(merged_result),
-                _utc_now(),
+                now,
                 job_id,
             ),
         )
-        conn.commit()
-    return get_job(job_id)
+        current.update(
+            status=new_status,
+            message=new_message,
+            payload=merged_payload,
+            result=merged_result,
+            updated_at=now,
+        )
+        return current
 
 
 def get_job(job_id: str) -> dict | None:
-    cleanup_expired_state()
     with _get_conn() as conn:
         row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
     if not row:
@@ -1545,13 +1604,23 @@ def upsert_pipeline_session(
     status: str | None = None,
     payload: dict | None = None,
 ) -> dict | None:
-    current = get_pipeline_session(session_id)
-    if not current:
-        return None
-    merged_payload = current["payload"]
-    if payload:
-        merged_payload = {**merged_payload, **payload}
-    with _get_conn() as conn:
+    now = _utc_now()
+    expires_at = _future_iso(hours=int(get_setting("app", "session_ttl_hours", 24)))
+    with _tx() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM pipeline_sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        if not row:
+            return None
+        current = dict(row)
+        current["payload"] = json.loads(current.get("payload") or "{}")
+
+        merged_payload = {**current["payload"], **payload} if payload else current["payload"]
+        new_category = category or current["category"]
+        new_status = status or current["status"]
+
         conn.execute(
             """
             UPDATE pipeline_sessions
@@ -1559,20 +1628,25 @@ def upsert_pipeline_session(
             WHERE id=?
             """,
             (
-                category or current["category"],
-                status or current["status"],
+                new_category,
+                new_status,
                 json.dumps(merged_payload),
-                _utc_now(),
-                _future_iso(hours=int(get_setting("app", "session_ttl_hours", 24))),
+                now,
+                expires_at,
                 session_id,
             ),
         )
-        conn.commit()
-    return get_pipeline_session(session_id)
+        current.update(
+            category=new_category,
+            status=new_status,
+            payload=merged_payload,
+            updated_at=now,
+            expires_at=expires_at,
+        )
+        return current
 
 
 def get_pipeline_session(session_id: str) -> dict | None:
-    cleanup_expired_state()
     with _get_conn() as conn:
         row = conn.execute(
             "SELECT * FROM pipeline_sessions WHERE id = ?",
@@ -2022,6 +2096,7 @@ def upsert_message_thread(
     thread_url: str = "",
     contact_name: str = "",
     contact_profile_url: str = "",
+    contact_avatar_url: str = "",
     latest_snippet: str = "",
     last_message_at: str = "",
     unread_count: int = 0,
@@ -2033,14 +2108,15 @@ def upsert_message_thread(
             conn.execute(
                 """
                 UPDATE message_threads
-                SET thread_url=?, contact_name=?, contact_profile_url=?, latest_snippet=?,
-                    last_message_at=?, unread_count=?, updated_at=?
+                SET thread_url=?, contact_name=?, contact_profile_url=?, contact_avatar_url=?,
+                    latest_snippet=?, last_message_at=?, unread_count=?, updated_at=?
                 WHERE thread_key=?
                 """,
                 (
                     thread_url or existing["thread_url"],
                     contact_name or existing["contact_name"],
                     contact_profile_url or existing["contact_profile_url"],
+                    contact_avatar_url or existing.get("contact_avatar_url", ""),
                     latest_snippet or existing["latest_snippet"],
                     last_message_at or existing["last_message_at"],
                     int(unread_count or 0),
@@ -2052,15 +2128,16 @@ def upsert_message_thread(
             conn.execute(
                 """
                 INSERT INTO message_threads
-                    (thread_key, thread_url, contact_name, contact_profile_url, latest_snippet,
-                     last_message_at, unread_count, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (thread_key, thread_url, contact_name, contact_profile_url, contact_avatar_url,
+                     latest_snippet, last_message_at, unread_count, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     thread_key,
                     thread_url,
                     contact_name,
                     contact_profile_url,
+                    contact_avatar_url,
                     latest_snippet,
                     last_message_at,
                     int(unread_count or 0),
@@ -2070,6 +2147,16 @@ def upsert_message_thread(
             )
         conn.commit()
     return get_message_thread_by_key(thread_key)
+
+
+def mark_message_thread_synced(thread_key: str) -> None:
+    now = _utc_now()
+    with _get_conn() as conn:
+        conn.execute(
+            "UPDATE message_threads SET last_synced_at=?, updated_at=? WHERE thread_key=?",
+            (now, now, thread_key),
+        )
+        conn.commit()
 
 
 def update_message_thread_state(

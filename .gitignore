@@ -4,6 +4,7 @@ config.yaml
 .claude/
 
 # Runtime data
+data/
 post_history.json
 posts.db
 linkedin_session/

@@ -5,16 +5,20 @@ Browser automation via Playwright (no LinkedIn API).
 
 from __future__ import annotations
 
+import atexit
 import hmac
 import json
 import os
 import secrets
+import signal
 import threading
 import time
+import traceback
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import Flask, Response, jsonify, redirect, render_template, request, session, url_for
+from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash
 
 from src import db, linkedin, message_automation, metrics, metrics_collector, pipeline, scheduler
@@ -35,13 +39,14 @@ from src.validation import (
 configure_logging()
 logger = get_logger(__name__)
 app = Flask(__name__)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 _runtime_ready = False
 _pipeline_workers: dict[str, threading.Thread] = {}
 _pipeline_worker_lock = threading.Lock()
 _SESSION_META_KEYS = {"events", "last_event", "preview_data", "test_mode"}
 _LOGIN_ATTEMPTS: dict[str, dict] = {}
 _UNSAFE_HTTP_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
-_AUTH_EXEMPT_ENDPOINTS = {"static", "login_page", "login_submit", "book_page", "book_submit"}
+_AUTH_EXEMPT_ENDPOINTS = {"static", "healthz", "login_page", "login_submit", "book_page", "book_submit"}
 
 
 def sse(data: dict) -> str:
@@ -73,7 +78,7 @@ def _security_ready() -> bool:
 
 
 def _session_timeout_seconds() -> int:
-    minutes = int(_security_settings().get("session_timeout_minutes", 480) or 480)
+    minutes = int(_security_settings().get("session_timeout_minutes", 43200) or 43200)
     return max(300, minutes * 60)
 
 
@@ -270,12 +275,23 @@ def _optional_int_arg(value, *, label: str, minimum: int | None = None, maximum:
 def initialize_runtime(*, start_scheduler: bool = True) -> None:
     global _runtime_ready
     if _runtime_ready:
+        if start_scheduler:
+            scheduler.start()
+            message_automation.start()
         return
     ensure_local_config()
     os.makedirs(os.path.join("static", "generated"), exist_ok=True)
     os.makedirs(os.path.join("static", "debug"), exist_ok=True)
     db.init_db()
     db.cleanup_expired_state()
+    recovered = db.recover_stale_workers()
+    if recovered["sessions"] or recovered["jobs"]:
+        logger.warning(
+            "Recuperadas %s sesiones y %s jobs huérfanos tras reinicio",
+            recovered["sessions"],
+            recovered["jobs"],
+            extra={"event": "startup.recovery", **recovered},
+        )
     settings = _settings()
     app.secret_key = settings["app"].get("secret_key", "dev-secret")
     app.config["SESSION_COOKIE_HTTPONLY"] = True
@@ -287,7 +303,39 @@ def initialize_runtime(*, start_scheduler: bool = True) -> None:
     if start_scheduler:
         scheduler.start()
         message_automation.start()
+    _register_shutdown_hooks()
     _runtime_ready = True
+
+
+_shutdown_hooks_registered = False
+
+
+def _graceful_shutdown(*_args) -> None:
+    try:
+        scheduler.stop()
+    except Exception:
+        logger.exception("scheduler stop failed", extra={"event": "shutdown.scheduler_error"})
+    try:
+        message_automation.stop()
+    except Exception:
+        logger.exception("message_automation stop failed", extra={"event": "shutdown.message_automation_error"})
+    try:
+        db.recover_stale_workers()
+    except Exception:
+        logger.exception("recovery at shutdown failed", extra={"event": "shutdown.recovery_error"})
+
+
+def _register_shutdown_hooks() -> None:
+    global _shutdown_hooks_registered
+    if _shutdown_hooks_registered:
+        return
+    atexit.register(_graceful_shutdown)
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _graceful_shutdown)
+        except (ValueError, OSError):
+            pass  # not in main thread (e.g. under gunicorn worker post-fork)
+    _shutdown_hooks_registered = True
 
 
 def _json_error(message: str, status: int = 400):
@@ -498,7 +546,12 @@ def _start_login_job(email: str, password: str) -> str:
                 )
         except Exception as exc:
             logger.exception("Error en login de LinkedIn", extra={"event": "auth.login_error"})
-            db.update_job(job_id, status="error", message=str(exc))
+            db.update_job(
+                job_id,
+                status="error",
+                message=f"Error inesperado: {exc}",
+                result={"error": str(exc), "traceback": traceback.format_exc()},
+            )
 
     threading.Thread(target=run_login, daemon=True).start()
     return job_id
@@ -578,6 +631,11 @@ initialize_runtime(start_scheduler=False)
 @app.context_processor
 def inject_template_state():
     return {"app_bootstrap": _template_bootstrap()}
+
+
+@app.route("/healthz")
+def healthz():
+    return jsonify({"ok": True})
 
 
 @app.before_request
@@ -882,8 +940,9 @@ def api_publish():
         required=True,
         max_length=4000,
     )
-    if not result.get("image_path"):
-        return _json_error("La sesión del pipeline no tiene imagen asociada.", 400)
+    image_path = result.get("image_path") or ""
+    if not image_path or not os.path.isfile(image_path):
+        return _json_error("La sesión del pipeline no tiene imagen válida. Regenérala.", 400)
     job_id = _start_publish_job(session_id, result, post_text)
     return jsonify({"job_id": job_id})
 
@@ -1105,6 +1164,49 @@ def api_messages_inbox():
     return jsonify({"threads": threads, "review_queue": db.list_message_review_items()})
 
 
+_SYNC_INBOX_COOLDOWN_SECONDS = 60
+_SYNC_THREAD_COOLDOWN_SECONDS = 30
+_SYNC_STATE: dict = {"inbox_last_run": 0.0, "threads": {}}
+_SYNC_STATE_LOCK = threading.Lock()
+
+
+@app.route("/api/messages/inbox/sync", methods=["POST"])
+def api_messages_inbox_sync():
+    data = _parse_json_body() or {}
+    limit = parse_int(data.get("limit"), label="limit", default=60, minimum=10, maximum=200)
+    force = parse_bool(data.get("force"), default=False)
+    now = time.time()
+    with _SYNC_STATE_LOCK:
+        last_run = float(_SYNC_STATE.get("inbox_last_run", 0) or 0)
+        if not force and now - last_run < _SYNC_INBOX_COOLDOWN_SECONDS:
+            remaining = int(_SYNC_INBOX_COOLDOWN_SECONDS - (now - last_run))
+            return jsonify({"ok": False, "reason": "cooldown", "retry_in_seconds": remaining}), 429
+        _SYNC_STATE["inbox_last_run"] = now
+    try:
+        fetched = linkedin.fetch_inbox_threads(limit=limit, log=lambda msg: logger.info(msg, extra={"event": "messages.inbox_sync"}))
+    except Exception as exc:
+        logger.exception("Error sincronizando inbox bajo demanda", extra={"event": "messages.inbox_sync_error"})
+        return _json_error(f"No se pudo leer la bandeja de LinkedIn: {exc}", 502)
+    persisted = 0
+    for thread in fetched or []:
+        thread_key = str(thread.get("thread_key") or thread.get("thread_url") or "").strip()
+        if not thread_key:
+            continue
+        db.upsert_message_thread(
+            thread_key=thread_key,
+            thread_url=str(thread.get("thread_url") or ""),
+            contact_name=str(thread.get("contact_name") or ""),
+            contact_profile_url=str(thread.get("contact_profile_url") or ""),
+            contact_avatar_url=str(thread.get("contact_avatar_url") or ""),
+            latest_snippet=str(thread.get("latest_snippet") or ""),
+            last_message_at=str(thread.get("last_message_at") or ""),
+            unread_count=int(thread.get("unread_count") or 0),
+        )
+        persisted += 1
+    threads = db.list_message_threads(limit=limit, query="", state="", include_closed=False)
+    return jsonify({"ok": True, "persisted": persisted, "threads": threads})
+
+
 @app.route("/api/messages/conversations/<int:thread_id>")
 def api_message_conversation(thread_id: int):
     thread = db.get_message_thread(thread_id)
@@ -1117,6 +1219,72 @@ def api_message_conversation(thread_id: int):
             "profile": db.get_contact_profile(thread_id) or {},
         }
     )
+
+
+@app.route("/api/messages/conversations/<int:thread_id>/sync", methods=["POST"])
+def api_message_conversation_sync(thread_id: int):
+    thread = db.get_message_thread(thread_id)
+    if not thread:
+        return _json_error("Conversación no encontrada.", 404)
+    data = _parse_json_body() or {}
+    limit = parse_int(data.get("limit"), label="limit", default=200, minimum=30, maximum=500)
+    force = parse_bool(data.get("force"), default=False)
+    now = time.time()
+    with _SYNC_STATE_LOCK:
+        threads_state = _SYNC_STATE.setdefault("threads", {})
+        last_run = float(threads_state.get(thread_id, 0) or 0)
+        if not force and now - last_run < _SYNC_THREAD_COOLDOWN_SECONDS:
+            remaining = int(_SYNC_THREAD_COOLDOWN_SECONDS - (now - last_run))
+            return jsonify({"ok": False, "reason": "cooldown", "retry_in_seconds": remaining}), 429
+        threads_state[thread_id] = now
+
+    thread_url = str(thread.get("thread_url") or "").strip()
+    if not thread_url:
+        return _json_error("El hilo no tiene URL asociada para sincronizar.", 400)
+    try:
+        detail = linkedin.fetch_conversation(
+            thread_url,
+            limit=limit,
+            log=lambda msg: logger.info(msg, extra={"event": "messages.thread_sync"}),
+        )
+    except Exception as exc:
+        logger.exception("Error sincronizando conversación", extra={"event": "messages.thread_sync_error"})
+        return _json_error(f"No se pudo leer la conversación: {exc}", 502)
+    if not detail:
+        return _json_error("LinkedIn no devolvió datos para esta conversación.", 502)
+
+    db.upsert_message_thread(
+        thread_key=str(thread.get("thread_key") or thread_url),
+        thread_url=thread_url,
+        contact_name=str(detail.get("contact_name") or thread.get("contact_name") or ""),
+        contact_profile_url=str(detail.get("contact_profile_url") or thread.get("contact_profile_url") or ""),
+        contact_avatar_url=str(detail.get("contact_avatar_url") or thread.get("contact_avatar_url") or ""),
+        latest_snippet=str(detail.get("latest_snippet") or ""),
+        last_message_at=str(detail.get("last_message_at") or ""),
+        unread_count=int(detail.get("unread_count") or 0),
+    )
+    db.mark_message_thread_synced(str(thread.get("thread_key") or thread_url))
+
+    persisted = 0
+    for msg in detail.get("messages", []) or []:
+        text = str(msg.get("text") or "").strip()
+        if not text:
+            continue
+        raw_hash = (msg.get("external_message_id") or f"{msg.get('happened_at', '')}-{text[:60]}").strip()
+        db.save_message_event(
+            thread_id,
+            event_type="message",
+            sender_role=str(msg.get("sender_role") or "contact"),
+            text=text,
+            message_hash=raw_hash,
+            happened_at=str(msg.get("happened_at") or datetime.now(UTC).isoformat()),
+            meta={"synced_via": "on_demand"},
+        )
+        persisted += 1
+
+    refreshed = db.get_message_thread(thread_id)
+    events = db.list_message_events(thread_id)
+    return jsonify({"ok": True, "persisted": persisted, "thread": refreshed, "events": events})
 
 
 @app.route("/api/messages/conversations/<int:thread_id>/reply", methods=["POST"])

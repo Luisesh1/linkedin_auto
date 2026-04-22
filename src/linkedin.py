@@ -17,9 +17,10 @@ from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 from src.config import get_setting
 from src.logging_utils import get_logger
 
-SESSION_DIR = os.path.abspath("linkedin_session")
-HISTORY_FILE = "post_history.json"
+SESSION_DIR = os.path.abspath(str(get_setting("storage", "linkedin_session_dir", "linkedin_session")))
+HISTORY_FILE = os.path.abspath(str(get_setting("storage", "linkedin_history_file", "post_history.json")))
 SESSION_FLAG = os.path.join(SESSION_DIR, "session_ok.json")
+STATIC_GENERATED_ROOT = os.path.abspath(os.path.join(os.getcwd(), "static", "generated"))
 logger = get_logger(__name__)
 _SESSION_PROBE_CACHE = {"checked_at": 0.0, "valid": False}
 _SESSION_PROBE_TTL_SECONDS = 120
@@ -715,6 +716,14 @@ def _type_post_text(page, text: str):
 def _upload_image(page, image_path: str):
     """Upload image to the post and dismiss the image-editing dialog if it appears."""
     abs_path = os.path.abspath(image_path)
+    try:
+        common = os.path.commonpath([abs_path, STATIC_GENERATED_ROOT])
+    except ValueError:
+        common = ""
+    if common != STATIC_GENERATED_ROOT:
+        raise ValueError(f"image_path fuera de static/generated: {image_path!r}")
+    if not os.path.isfile(abs_path):
+        raise FileNotFoundError(abs_path)
 
     # Strategy 1: find visible media/photo button and use file chooser
     media_selectors = [
@@ -1097,7 +1106,12 @@ def _locator_digit_count(root, selectors: list[str]) -> int:
     return 0
 
 
-def fetch_inbox_threads(limit: int = 15, *, log=print) -> list[dict]:
+def fetch_inbox_threads(limit: int = 50, *, max_scrolls: int = 6, log=print) -> list[dict]:
+    """Read the LinkedIn inbox without clicking each thread.
+
+    Uses DOM extraction + gentle scrolling to collect up to `limit` conversations.
+    Returns thread metadata (including avatar and profile URL) for the UI.
+    """
     if not is_session_valid():
         return []
 
@@ -1109,96 +1123,89 @@ def fetch_inbox_threads(limit: int = 15, *, log=print) -> list[dict]:
             log("Abriendo inbox de LinkedIn...")
             _goto_with_retry(page, "https://www.linkedin.com/messaging/", log)
             _human_delay(page, 1.5, 2.0)
-            rows = page.locator("li.msg-conversation-listitem, .msg-conversation-listitem")
-            row_count = min(rows.count(), max(0, int(limit)))
-            seen: set[str] = set()
-            out: list[dict] = []
 
-            for index in range(row_count):
-                row = rows.nth(index)
-                row.scroll_into_view_if_needed(timeout=5000)
-                _human_delay(page, 0.1, 0.2)
+            try:
+                page.wait_for_selector("li.msg-conversation-listitem, .msg-conversation-listitem", timeout=8000)
+            except Exception:
+                log("No se pudieron encontrar conversaciones en la bandeja.")
+                return []
 
-                contact_name = _locator_first_text(
-                    row,
-                    [
-                        ".msg-conversation-listitem__participant-names",
-                        ".msg-conversation-card__participant-names",
-                        "h3",
-                    ],
-                ) or f"Contacto {index + 1}"
-                latest_snippet = _locator_first_text(
-                    row,
-                    [
-                        ".msg-conversation-card__message-snippet",
-                        ".msg-conversation-listitem__message-snippet",
-                        "p",
-                    ],
-                )
-                last_message_at = _locator_first_text(
-                    row,
-                    [
-                        "time",
-                        ".msg-conversation-listitem__time-stamp",
-                    ],
-                )
-                row_text = ""
-                try:
-                    row_text = re.sub(r"\s+", " ", row.inner_text(timeout=2000)).strip()
-                except Exception:
-                    row_text = ""
-                unread_count = _locator_digit_count(
-                    row,
-                    [
-                        ".notification-badge__count",
-                        ".msg-conversation-card__unread-count",
-                        ".msg-conversation-listitem__unread-count",
-                        ".artdeco-pill",
-                    ],
-                )
-
-                click_target = row.locator(
-                    ".msg-conversation-listitem__link, .msg-conversation-card, [tabindex='0']"
-                ).first
-                try:
-                    click_target.click(timeout=5000)
-                    page.wait_for_timeout(1200)
-                except Exception as exc:
-                    log(f"No se pudo abrir la conversación #{index + 1}: {exc}")
-                    continue
-
-                thread_url = str(page.url or "").strip()
-                if not thread_url:
-                    continue
-                thread_key = thread_url
-                if thread_key in seen:
-                    continue
-                seen.add(thread_key)
-                contact_profile_url = ""
-                try:
-                    contact_profile_url = page.locator(".msg-thread__link-to-profile").first.get_attribute("href", timeout=2000) or ""
-                except Exception:
-                    contact_profile_url = ""
-
-                out.append(
-                    {
-                        "thread_key": thread_key,
-                        "thread_url": thread_url,
-                        "contact_name": contact_name,
-                        "latest_snippet": latest_snippet or row_text[:180],
-                        "last_message_at": last_message_at,
-                        "unread_count": unread_count,
-                        "contact_profile_url": contact_profile_url,
-                    }
-                )
-                if len(out) >= limit:
+            # Gentle scroll inside the conversation list pane to load more threads on demand.
+            previous_count = 0
+            for scroll_index in range(max(1, int(max_scrolls))):
+                count = page.locator("li.msg-conversation-listitem, .msg-conversation-listitem").count()
+                if count >= limit:
                     break
-            return out
+                if count == previous_count and scroll_index > 0:
+                    break
+                previous_count = count
+                try:
+                    page.evaluate(
+                        """() => {
+                            const container = document.querySelector(
+                              '.msg-conversations-container__conversations-list, .msg-conversations-container .scaffold-finite-scroll__content'
+                            );
+                            if (container) container.scrollBy(0, container.clientHeight * 0.9);
+                            else window.scrollBy(0, window.innerHeight);
+                        }"""
+                    )
+                except Exception:
+                    break
+                _human_delay(page, 0.8, 1.2)
+
+            data = page.evaluate(
+                """(limit) => {
+                    const normalized = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+                    const nodes = Array.from(document.querySelectorAll(
+                      'li.msg-conversation-listitem, .msg-conversation-listitem'
+                    )).slice(0, limit);
+                    const seen = new Set();
+                    const out = [];
+                    for (const node of nodes) {
+                      const anchor = node.querySelector('a.msg-conversation-listitem__link, a[href*="/messaging/"]');
+                      const href = anchor?.href || '';
+                      if (!href) continue;
+                      const thread_key = href.split('?')[0];
+                      if (seen.has(thread_key)) continue;
+                      seen.add(thread_key);
+                      const contact_name = normalized(
+                        node.querySelector('.msg-conversation-listitem__participant-names, .msg-conversation-card__participant-names, h3')?.innerText
+                      ) || 'Contacto';
+                      const latest_snippet = normalized(
+                        node.querySelector('.msg-conversation-card__message-snippet, .msg-conversation-listitem__message-snippet, p')?.innerText
+                      );
+                      const last_message_at = normalized(
+                        node.querySelector('time')?.getAttribute('datetime')
+                        || node.querySelector('time')?.innerText
+                        || node.querySelector('.msg-conversation-listitem__time-stamp')?.innerText
+                      );
+                      const badge = node.querySelector('.notification-badge__count, .msg-conversation-card__unread-count, .msg-conversation-listitem__unread-count');
+                      const unread_count = badge ? parseInt(normalized(badge.innerText).replace(/\\D+/g, ''), 10) || 0 : 0;
+                      const avatar_img = node.querySelector('img.presence-entity__image, .msg-conversation-listitem__image img, img.ivm-view-attr__img--centered');
+                      const contact_avatar_url = avatar_img?.src || '';
+                      const profile_link = node.querySelector('a.app-aware-link[href*="/in/"]');
+                      const contact_profile_url = profile_link?.href || '';
+                      out.push({
+                        thread_key,
+                        thread_url: href,
+                        contact_name,
+                        latest_snippet,
+                        last_message_at,
+                        unread_count,
+                        contact_avatar_url,
+                        contact_profile_url,
+                      });
+                    }
+                    return out;
+                }""",
+                int(limit),
+            )
+            return list(data or [])
         finally:
             context.close()
 
 
-def fetch_conversation(thread_url: str, *, log=print, limit: int = 30) -> dict | None:
+def fetch_conversation(thread_url: str, *, log=print, limit: int = 200, max_scrolls: int = 6) -> dict | None:
     if not thread_url or not is_session_valid():
         return None
 
@@ -1210,6 +1217,33 @@ def fetch_conversation(thread_url: str, *, log=print, limit: int = 30) -> dict |
             _goto_with_retry(page, thread_url, log)
             _human_delay(page, 1.2, 1.8)
             page.wait_for_timeout(1200)
+
+            # Scroll up inside the thread to load older messages on demand.
+            previous_count = 0
+            for scroll_index in range(max(1, int(max_scrolls))):
+                try:
+                    current_count = page.locator(".msg-s-event-listitem, .msg-s-message-list__event").count()
+                except Exception:
+                    current_count = 0
+                if current_count >= limit:
+                    break
+                if current_count == previous_count and scroll_index > 0:
+                    break
+                previous_count = current_count
+                try:
+                    page.evaluate(
+                        """() => {
+                            const list = document.querySelector(
+                              '.msg-s-message-list-content, .msg-s-message-list, .msg-thread .scaffold-finite-scroll__content'
+                            );
+                            if (list) list.scrollTo({ top: 0, behavior: 'auto' });
+                            else window.scrollTo({ top: 0, behavior: 'auto' });
+                        }"""
+                    )
+                except Exception:
+                    break
+                _human_delay(page, 0.8, 1.2)
+
             data = page.evaluate(
                 """(limit) => {
                     const normalized = (value) => (value || '').replace(/\\s+/g, ' ').trim();
