@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mensajes Automatizados</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/style.css?v=20260314-premium" />
+</head>
+<body data-page="messages">
+<nav class="navbar navbar-dark">
+  <div class="container-fluid px-4">
+    <div class="d-flex align-items-center gap-3">
+      <span class="navbar-brand d-flex align-items-center gap-2 mb-0">
+        <i class="bi bi-linkedin fs-4"></i>
+        <span class="fw-bold">LinkedIn Auto-Poster</span>
+      </span>
+      <div class="top-nav-links d-none d-md-flex align-items-center gap-2">
+        <a href="/" class="top-nav-link">Dashboard</a>
+        <a href="/automation" class="top-nav-link">Automatización</a>
+        <a href="/messages" class="top-nav-link active">Mensajes</a>
+        <a href="/settings" class="top-nav-link">Configuración</a>
+      </div>
+    </div>
+    <div class="d-flex align-items-center gap-3">
+      <div id="auth-banner" class="d-flex align-items-center gap-2">
+        <span id="auth-status-text" class="badge fs-6 px-3 py-2"><i class="bi bi-clock-history me-1"></i> Verificando...</span>
+        <button id="login-btn" class="btn btn-sm btn-outline-light d-none" onclick="startLogin()">
+          <i class="bi bi-box-arrow-in-right me-1"></i> Iniciar sesión
+        </button>
+        <button id="disconnect-btn" class="btn btn-sm btn-outline-danger d-none" onclick="disconnectLinkedIn()">
+          <i class="bi bi-x-circle me-1"></i> Cerrar sesión
+        </button>
+      </div>
+      <div class="d-flex align-items-center gap-2">
+        <span class="text-light small d-none d-md-inline">{{ app_bootstrap.currentUser }}</span>
+        <button class="btn btn-sm btn-outline-light" onclick="logoutApp()">
+          <i class="bi bi-box-arrow-right me-1"></i> Salir
+        </button>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<main class="container py-4">
+  <section class="page-intro card shadow-sm mb-4">
+    <div class="card-body page-intro-body d-flex flex-wrap justify-content-between align-items-start gap-3">
+      <div class="page-intro-copy">
+        <span class="eyebrow text-uppercase">Mensajes</span>
+        <h1 class="h4 mb-2">Automatización del inbox de LinkedIn</h1>
+        <p class="page-intro-text text-muted mb-0">Responde inbound, escala casos sensibles, agenda reuniones con un booking interno y mantiene memoria ligera por contacto.</p>
+      </div>
+      <button class="btn btn-outline-secondary intro-secondary-btn" onclick="syncMessagesNow()">
+        <i class="bi bi-arrow-repeat me-2"></i>Sincronizar ahora
+      </button>
+    </div>
+  </section>
+
+  <div class="row g-4">
+    <div class="col-xl-4">
+      <div class="card shadow-sm mb-4">
+        <div class="card-header fw-semibold d-flex justify-content-between align-items-center">
+          <span><i class="bi bi-robot me-2"></i>Automatización</span>
+          <span id="msg-auto-status" class="badge bg-secondary">Desactivada</span>
+        </div>
+        <div class="card-body">
+          <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" id="msg-enabled">
+            <label class="form-check-label" for="msg-enabled">Automatización activa</label>
+          </div>
+          <div class="mb-3">
+            <label class="form-label small fw-semibold">Intervalo (min)</label>
+            <input id="msg-interval" type="number" min="1" max="120" class="form-control" value="5">
+          </div>
+          <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" id="msg-auto-send">
+            <label class="form-check-label" for="msg-auto-send">Autoenviar respuestas</label>
+          </div>
+          <div class="mb-3">
+            <label class="form-label small fw-semibold">Public Base URL</label>
+            <input id="msg-public-base-url" class="form-control" placeholder="https://tu-dominio.com">
+          </div>
+          <div class="mb-3">
+            <label class="form-label small fw-semibold">Meeting location</label>
+            <input id="msg-meeting-location" class="form-control" placeholder="Enlace o nota">
+          </div>
+          <div class="row g-2 mb-3">
+            <div class="col-6">
+              <label class="form-label small fw-semibold">Sync limit</label>
+              <input id="msg-sync-limit" type="number" min="1" max="100" class="form-control" value="15">
+            </div>
+            <div class="col-6">
+              <label class="form-label small fw-semibold">Threads/ciclo</label>
+              <input id="msg-max-threads" type="number" min="1" max="50" class="form-control" value="5">
+            </div>
+          </div>
+          <div class="small text-muted mb-2">Booking token</div>
+          <div class="d-flex gap-2 align-items-center mb-3">
+            <code id="msg-booking-token" class="small flex-grow-1"></code>
+            <button class="btn btn-sm btn-outline-secondary" onclick="regenerateBookingToken()">
+              <i class="bi bi-arrow-clockwise"></i>
+            </button>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="saveMessageAutomation()">
+            <i class="bi bi-floppy-fill me-1"></i>Guardar
+          </button>
+          <div id="msg-current-run" class="mt-3 small text-muted"></div>
+        </div>
+      </div>
+
+      <div class="card shadow-sm mb-4 border-warning-subtle">
+        <div class="card-header fw-semibold d-flex justify-content-between align-items-center">
+          <span><i class="bi bi-bug me-2 text-warning"></i>Simular mensaje entrante</span>
+          <span class="badge bg-warning-subtle text-warning-emphasis">Test</span>
+        </div>
+        <div class="card-body">
+          <p class="small text-muted mb-3">
+            Inyecta un mensaje falso en el pipeline real (clasificación → escalación → respuesta automática).
+            No envía nada a LinkedIn — solo persiste el resultado en la BD.
+          </p>
+          <div class="mb-3">
+            <label class="form-label small fw-semibold">Hilo destino</label>
+            <select id="sim-thread-target" class="form-select form-select-sm">
+              <option value="">Crear hilo nuevo</option>
+            </select>
+          </div>
+          <div class="mb-3">
+            <label class="form-label small fw-semibold">Nombre del contacto</label>
+            <input id="sim-contact-name" class="form-control form-control-sm" placeholder="Recruiter Jane">
+          </div>
+          <div class="mb-3">
+            <label class="form-label small fw-semibold">Mensaje del contacto</label>
+            <textarea id="sim-message-text" class="form-control form-control-sm" rows="4"
+                      placeholder="Hola, ¿podemos agendar una llamada esta semana?"></textarea>
+          </div>
+          <div class="mb-3">
+            <label class="form-label small fw-semibold">Plantillas rápidas</label>
+            <div class="d-flex flex-wrap gap-1">
+              <button type="button" class="btn btn-sm btn-outline-secondary" onclick="applySimTemplate('recruiter')">Recruiter</button>
+              <button type="button" class="btn btn-sm btn-outline-secondary" onclick="applySimTemplate('meeting')">Reunión</button>
+              <button type="button" class="btn btn-sm btn-outline-secondary" onclick="applySimTemplate('networking')">Networking</button>
+              <button type="button" class="btn btn-sm btn-outline-secondary" onclick="applySimTemplate('sensitive')">Sensible</button>
+            </div>
+          </div>
+          <button class="btn btn-warning btn-sm w-100" onclick="submitSimulatedMessage()">
+            <i class="bi bi-send-arrow-up me-1"></i>Simular mensaje
+          </button>
+          <div id="sim-result" class="mt-3 small"></div>
+        </div>
+      </div>
+
+      <div class="card shadow-sm mb-4">
+        <div class="card-header fw-semibold"><i class="bi bi-exclamation-diamond me-2"></i>Revisión manual</div>
+        <div class="card-body" id="msg-review-queue">
+          <p class="text-muted small mb-0">Sin items pendientes.</p>
+        </div>
+      </div>
+
+      <div class="card shadow-sm">
+        <div class="card-header fw-semibold"><i class="bi bi-calendar-event me-2"></i>Calendario interno</div>
+        <div class="card-body">
+          <p class="small text-muted">Configura bloques semanales de disponibilidad.</p>
+          <div id="calendar-blocks" class="d-grid gap-2 mb-3"></div>
+          <button class="btn btn-sm btn-outline-secondary mb-3" onclick="addAvailabilityBlock()">
+            <i class="bi bi-plus-lg me-1"></i>Agregar bloque
+          </button>
+          <div>
+            <button class="btn btn-sm btn-primary" onclick="saveAvailability()">
+              <i class="bi bi-save me-1"></i>Guardar disponibilidad
+            </button>
+          </div>
+          <hr>
+          <div class="small text-muted mb-2">Próximas reservas</div>
+          <div id="calendar-bookings">
+            <p class="text-muted small mb-0">Sin reservas.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-xl-8">
+      <div class="card shadow-sm mb-4">
+        <div class="card-header fw-semibold d-flex justify-content-between align-items-center">
+          <span><i class="bi bi-chat-left-text me-2"></i>Inbox</span>
+          <input id="msg-search" class="form-control form-control-sm" style="max-width:280px" placeholder="Buscar contacto o contexto">
+        </div>
+        <div class="card-body p-0">
+          <div class="message-inbox-layout">
+            <div class="message-thread-list" id="message-thread-list"></div>
+            <div class="message-thread-detail" id="message-thread-detail">
+              <div class="p-4 text-muted small">Selecciona una conversación para ver el detalle.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+  window.APP_BOOTSTRAP = {{ app_bootstrap|tojson }};
+</script>
+<script src="/static/js/app.js?v=20260317-state"></script>
+<script src="/static/js/messages.js?v=20260407-simulate"></script>
+</body>
+</html>

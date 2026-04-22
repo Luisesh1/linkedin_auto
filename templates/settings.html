@@ -20,6 +20,7 @@
       <div class="top-nav-links d-none d-md-flex align-items-center gap-2">
         <a href="/" class="top-nav-link">Dashboard</a>
         <a href="/automation" class="top-nav-link">Automatización</a>
+        <a href="/messages" class="top-nav-link">Mensajes</a>
         <a href="/settings" class="top-nav-link active">Configuración</a>
       </div>
     </div>
@@ -242,6 +243,7 @@
                   </label>
                   <select id="category-hook-style" class="form-select form-select-sm">
                     <option value="auto">Auto</option>
+                    <option value="clarity">Claridad</option>
                     <option value="question">Pregunta</option>
                     <option value="contrarian">Contrarian</option>
                     <option value="story">Historia</option>
@@ -326,6 +328,39 @@
             </label>
             <textarea id="category-negative-prompt" class="form-control settings-textarea" rows="3"
               placeholder="p.ej. No menciones competidores, evita lenguaje corporativo, no uses estadísticas sin fuente..."></textarea>
+          </div>
+
+          <!-- Forbidden phrases -->
+          <div class="mb-4">
+            <label class="form-label fw-semibold small d-block mb-1">
+              <i class="bi bi-x-octagon me-1 text-danger"></i>Frases prohibidas
+              <small class="text-muted fw-normal ms-1">— bloquean copy genérico ("game changer", "esto cambia todo"...)</small>
+            </label>
+            <div id="cat-forbidden-list" class="d-flex flex-wrap gap-1 mb-2"></div>
+            <div class="d-flex gap-2">
+              <input type="text" class="form-control form-control-sm" id="cat-forbidden-input"
+                     placeholder='p.ej. esto cambia todo' style="max-width:300px"
+                     onkeydown="if(event.key==='Enter'){event.preventDefault();addCatForbidden();}">
+              <button class="btn btn-sm btn-outline-danger" onclick="addCatForbidden()">
+                <i class="bi bi-plus-lg"></i>
+              </button>
+            </div>
+          </div>
+
+          <!-- Voice examples -->
+          <div class="mb-4">
+            <label class="form-label fw-semibold small d-block mb-1">
+              <i class="bi bi-chat-quote me-1 text-success"></i>Ejemplos de voz
+              <small class="text-muted fw-normal ms-1">— 1 a 3 fragmentos cortos que ejemplifican el tono ideal</small>
+            </label>
+            <div id="cat-voice-list" class="d-flex flex-column gap-1 mb-2"></div>
+            <div class="d-flex gap-2">
+              <textarea class="form-control form-control-sm" id="cat-voice-input" rows="2"
+                        placeholder="p.ej. Le di un feedback que creí valiente. En realidad fue cómodo: dije lo difícil con frases blandas."></textarea>
+              <button class="btn btn-sm btn-outline-success align-self-start" onclick="addCatVoiceExample()">
+                <i class="bi bi-plus-lg"></i>
+              </button>
+            </div>
           </div>
 
           <!-- Fallback topics -->

@@ -13,6 +13,16 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 
+@pytest.fixture(autouse=True)
+def _disable_brief_enrichment(monkeypatch):
+    """Prevent the pipeline from hitting the xAI API during tests."""
+    try:
+        pipeline_module = importlib.import_module("src.pipeline")
+    except Exception:
+        return
+    monkeypatch.setattr(pipeline_module, "_enrich_brief_with_llm", lambda *a, **kw: {})
+
+
 @pytest.fixture()
 def app_env(monkeypatch, tmp_path):
     db_path = tmp_path / "test_posts.db"

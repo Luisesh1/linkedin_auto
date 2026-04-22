@@ -5,7 +5,9 @@ synthesize professional LinkedIn-ready topics from that evidence.
 """
 
 import json
+import os
 import re
+import time
 import xml.etree.ElementTree as ET
 from html import unescape
 from urllib.parse import quote_plus
@@ -17,7 +19,40 @@ from src.llm import get_text_model, get_xai_client
 from src.logging_utils import get_logger
 
 REQUEST_TIMEOUT = 20
+SIGNALS_CACHE_PATH = os.environ.get("SIGNALS_CACHE_PATH", "/tmp/autolinkedin_signals_cache.json")
+SIGNALS_CACHE_TTL = int(os.environ.get("SIGNALS_CACHE_TTL", "21600"))  # 6h
 logger = get_logger(__name__)
+
+
+def _signals_cache_key(category_cfg: dict | None) -> str:
+    return str((category_cfg or {}).get("name") or "default").strip().lower()
+
+
+def _load_signals_cache(key: str) -> dict | None:
+    try:
+        with open(SIGNALS_CACHE_PATH, encoding="utf-8") as fp:
+            data = json.load(fp)
+        entry = data.get(key)
+        if not entry:
+            return None
+        if time.time() - float(entry.get("ts", 0)) > SIGNALS_CACHE_TTL:
+            return None
+        return entry.get("evidence") or None
+    except Exception:
+        return None
+
+
+def _save_signals_cache(key: str, evidence: dict) -> None:
+    try:
+        data: dict = {}
+        if os.path.exists(SIGNALS_CACHE_PATH):
+            with open(SIGNALS_CACHE_PATH, encoding="utf-8") as fp:
+                data = json.load(fp) or {}
+        data[key] = {"ts": time.time(), "evidence": evidence}
+        with open(SIGNALS_CACHE_PATH, "w", encoding="utf-8") as fp:
+            json.dump(data, fp)
+    except Exception as exc:
+        logger.info("No se pudo persistir cache de señales", extra={"event": "trends.cache_save_failed"}, exc_info=exc)
 NEWS_QUERIES = [
     "artificial intelligence site:reuters.com OR site:techcrunch.com OR site:theverge.com OR site:wired.com when:7d",
     "cybersecurity site:reuters.com OR site:bloomberg.com OR site:therecord.media when:7d",
@@ -151,6 +186,29 @@ def _category_text(category_cfg: dict | None, key: str, fallback: str) -> str:
     return value or fallback
 
 
+def _coerce_list(value) -> list:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+    except Exception:
+        pass
+    return []
+
+
+_ORIGINALITY_HINTS = {
+    1: "Prefiere temas claros, consensuales y de interés masivo profesional.",
+    2: "Busca temas relevantes con un ángulo ligeramente menos obvio que el promedio.",
+    3: "Prefiere temas con un ángulo distintivo que evite los lugares comunes del feed.",
+    4: "Busca señales poco explotadas o lecturas frescas sobre tendencias en curso.",
+    5: "Prioriza señales contraintuitivas, tensiones reales y observaciones que el feed promedio aún no ha visto.",
+}
+
+
 def _build_prompt(evidence: dict[str, list[str]], category_cfg: dict | None = None) -> str:
     sections = []
     for source, items in evidence.items():
@@ -165,38 +223,56 @@ def _build_prompt(evidence: dict[str, list[str]], category_cfg: dict | None = No
         "trends_prompt",
         "Prioriza tendencias con relevancia profesional y conversación real en LinkedIn.",
     )
-    import json as _json
-    topic_keywords = []
-    if category_cfg:
-        try:
-            kw = category_cfg.get("topic_keywords", [])
-            topic_keywords = kw if isinstance(kw, list) else _json.loads(kw or "[]")
-        except Exception:
-            topic_keywords = []
-    keywords_note = ""
-    if topic_keywords:
-        keywords_note = f"\n\nKEYWORDS FOCO: Asegúrate de que varios temas estén relacionados con alguna de estas palabras clave: {', '.join(topic_keywords)}."
-    return f"""Eres un investigador de tendencias para redes sociales profesionales.
+    topic_keywords = _coerce_list((category_cfg or {}).get("topic_keywords"))
+    audience_focus = str((category_cfg or {}).get("audience_focus") or "").strip()
+    negative_prompt = str((category_cfg or {}).get("negative_prompt") or "").strip()
+    try:
+        originality_level = int((category_cfg or {}).get("originality_level", 3) or 3)
+    except (TypeError, ValueError):
+        originality_level = 3
+    originality_hint = _ORIGINALITY_HINTS.get(originality_level, _ORIGINALITY_HINTS[3])
 
-Tu tarea es detectar 10 temas actuales y relevantes para publicar en LinkedIn
-basándote SOLO en la evidencia externa recopilada abajo.
+    keywords_block = (
+        f"Foco temático obligatorio: al menos la mitad de los temas debe relacionarse "
+        f"con alguna de estas palabras clave → {', '.join(topic_keywords)}."
+        if topic_keywords
+        else "Foco temático: dentro del dominio descrito por el objetivo de la categoría."
+    )
+    audience_block = (
+        f"Lector objetivo: {audience_focus}."
+        if audience_focus
+        else "Lector objetivo: profesionales con criterio para distinguir señal de ruido."
+    )
+    negative_block = (
+        f"Filtros de descarte específicos de la categoría:\n- {negative_prompt}"
+        if negative_prompt
+        else "Filtros de descarte: evita clickbait, temas demasiado nicho y duplicados."
+    )
+
+    return f"""Eres un investigador de tendencias para LinkedIn especializado en la categoría editorial activa.
+
+Tu tarea: detectar 10 temas actuales y relevantes para publicar, basándote SOLO en la evidencia externa recopilada abajo.
 
 Categoría activa: {category_name}
 
-Objetivo específico para esta categoría:
+Objetivo de la categoría:
 {trends_instruction}
 
+{audience_block}
+{keywords_block}
+Nivel de originalidad esperado ({originality_level}/5): {originality_hint}
+
 Prioriza:
-- Coincidencias entre varias fuentes
-- Relevancia social y profesional
-- Tecnología, IA, mercado laboral, liderazgo, productividad, ciberseguridad,
-  startups, desarrollo de software y transformación digital
-- Temas con potencial de conversación real en LinkedIn
+- Coincidencias entre varias fuentes que apunten al mismo cambio real.
+- Señales con potencial de conversación específica para el lector objetivo.
+- Temas donde una observación concreta aporte más valor que repetir la noticia.
 
 Descarta:
-- Clickbait
-- Temas demasiado nicho
-- Duplicados o variaciones del mismo tema{keywords_note}
+- Clickbait o exageraciones.
+- Temas que ya saturaron el feed sin un ángulo nuevo.
+- Variaciones del mismo tema repetidas en distintas fuentes.
+
+{negative_block}
 
 EVIDENCIA:
 {evidence_text}
@@ -283,11 +359,20 @@ def _fallback_topics(category_cfg: dict | None = None) -> list[str]:
 
 
 def get_topic_candidates(category_cfg: dict | None = None, diversify_hint: str = "") -> dict:
-    evidence = {
-        "Noticias internacionales": _fetch_google_news_signals(),
-        "LinkedIn": _fetch_linkedin_signals(),
-        "X/Twitter": _fetch_x_signals(),
-    }
+    cache_key = _signals_cache_key(category_cfg)
+    evidence = _load_signals_cache(cache_key)
+    if evidence is None:
+        evidence = {
+            "Noticias internacionales": _fetch_google_news_signals(),
+            "LinkedIn": _fetch_linkedin_signals(),
+            "X/Twitter": _fetch_x_signals(),
+        }
+        _save_signals_cache(cache_key, evidence)
+    else:
+        logger.info(
+            "Reutilizando señales cacheadas (TTL vigente)",
+            extra={"event": "trends.cache_hit", "category": cache_key},
+        )
     evidence_records = _flatten_evidence(evidence, category_cfg=category_cfg)
     prompt = _build_prompt(evidence, category_cfg=category_cfg)
     if diversify_hint:

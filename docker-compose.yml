@@ -12,6 +12,7 @@ services:
     environment:
       APP_PORT: 5000
     volumes:
+      - ./.env:/app/.env:ro
       - ./config.yaml:/app/config.yaml
       - ./posts.db:/app/posts.db
       - ./post_history.json:/app/post_history.json

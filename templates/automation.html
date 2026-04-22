@@ -20,6 +20,7 @@
       <div class="top-nav-links d-none d-md-flex align-items-center gap-2">
         <a href="/" class="top-nav-link">Dashboard</a>
         <a href="/automation" class="top-nav-link active">Automatización</a>
+        <a href="/messages" class="top-nav-link">Mensajes</a>
         <a href="/settings" class="top-nav-link">Configuración</a>
       </div>
     </div>
@@ -130,6 +131,11 @@
     <div class="card-header fw-semibold">
       <i class="bi bi-gear-fill me-2"></i>Progreso del Pipeline
     </div>
+    <div id="resolved-category-banner" class="alert alert-info border-0 border-bottom rounded-0 mb-0 d-none">
+      <i class="bi bi-shuffle me-2"></i>
+      Categoría elegida para esta ejecución:
+      <strong id="resolved-category-name" class="ms-1"></strong>
+    </div>
     <ul class="list-group list-group-flush">
       <li class="list-group-item" id="step-1">
         <div class="d-flex align-items-center gap-3">
@@ -200,21 +206,8 @@
         <div class="d-flex align-items-center gap-3">
           <div class="step-icon" id="icon-6"><i class="bi bi-circle text-muted"></i></div>
           <div class="flex-grow-1">
-            <div class="step-label fw-semibold">6. Gate de calidad</div>
+            <div class="step-label fw-semibold">6. Vista previa y publicación</div>
             <div class="step-detail text-muted small" id="detail-6"></div>
-          </div>
-          <button id="regen-6" class="btn btn-sm btn-outline-secondary d-none"
-                  onclick="rerunFromStep(6)" title="Reevaluar gate final">
-            <i class="bi bi-arrow-clockwise me-1"></i><span class="d-none d-sm-inline">Regenerar</span>
-          </button>
-        </div>
-      </li>
-      <li class="list-group-item" id="step-7">
-        <div class="d-flex align-items-center gap-3">
-          <div class="step-icon" id="icon-7"><i class="bi bi-circle text-muted"></i></div>
-          <div class="flex-grow-1">
-            <div class="step-label fw-semibold">7. Vista previa y publicación</div>
-            <div class="step-detail text-muted small" id="detail-7"></div>
           </div>
         </div>
       </li>

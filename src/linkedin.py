@@ -6,6 +6,9 @@ No LinkedIn API — posts directly via the browser like a real user.
 
 import json
 import os
+import re
+import socket
+import threading
 import time
 from datetime import datetime
 
@@ -20,6 +23,10 @@ SESSION_FLAG = os.path.join(SESSION_DIR, "session_ok.json")
 logger = get_logger(__name__)
 _SESSION_PROBE_CACHE = {"checked_at": 0.0, "valid": False}
 _SESSION_PROBE_TTL_SECONDS = 120
+_LOGIN_STATE_LOCK = threading.Lock()
+_LOGIN_IN_PROGRESS = False
+_PROFILE_LOCK_PATTERN = re.compile(r"^(?P<host>.+)-(?P<pid>\d+)$")
+_STALE_PROFILE_LOCK_FILES = ("SingletonLock", "SingletonCookie", "SingletonSocket", "Default/LOCK")
 
 # Script injected to hide automation signals from LinkedIn
 _STEALTH_SCRIPT = """
@@ -43,9 +50,98 @@ def _set_session_probe_cache(valid: bool) -> None:
     _SESSION_PROBE_CACHE["valid"] = bool(valid)
 
 
+def is_login_in_progress() -> bool:
+    with _LOGIN_STATE_LOCK:
+        return _LOGIN_IN_PROGRESS
+
+
+def _set_login_in_progress(value: bool) -> None:
+    global _LOGIN_IN_PROGRESS
+    with _LOGIN_STATE_LOCK:
+        _LOGIN_IN_PROGRESS = bool(value)
+
+
+def _pid_exists(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def _singleton_lock_details() -> dict | None:
+    lock_path = os.path.join(SESSION_DIR, "SingletonLock")
+    if not os.path.lexists(lock_path):
+        return None
+    try:
+        raw_value = os.readlink(lock_path) if os.path.islink(lock_path) else open(lock_path, encoding="utf-8").read().strip()
+    except OSError:
+        return None
+    match = _PROFILE_LOCK_PATTERN.match(os.path.basename(str(raw_value).strip()))
+    if not match:
+        return None
+    return {"host": match.group("host"), "pid": int(match.group("pid"))}
+
+
+def _profile_lock_is_stale() -> bool:
+    details = _singleton_lock_details()
+    if details:
+        if details["host"] != socket.gethostname():
+            return True
+        return not _pid_exists(details["pid"])
+
+    default_lock = os.path.join(SESSION_DIR, "Default", "LOCK")
+    return os.path.exists(default_lock)
+
+
+def _cleanup_stale_profile_locks(log=print) -> bool:
+    if not _profile_lock_is_stale():
+        return False
+
+    removed_any = False
+    lock_candidates = [os.path.join(SESSION_DIR, relative_path) for relative_path in _STALE_PROFILE_LOCK_FILES]
+    lock_candidates.extend(
+        os.path.join(SESSION_DIR, name)
+        for name in os.listdir(SESSION_DIR)
+        if name.startswith(".org.chromium.Chromium.")
+    )
+
+    for path in lock_candidates:
+        if not os.path.lexists(path):
+            continue
+        try:
+            os.unlink(path)
+            removed_any = True
+        except IsADirectoryError:
+            continue
+        except OSError as exc:
+            log(f"No se pudo limpiar el lock obsoleto del perfil ({os.path.basename(path)}): {exc}")
+
+    if removed_any:
+        log("Se detecto un lock viejo del perfil de Chromium. Limpiando archivos temporales y reintentando...")
+    return removed_any
+
+
+def _is_profile_locked_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    lock_tokens = (
+        "profile appears to be in use",
+        "chromium has locked the profile",
+        "singletonlock",
+        "user data directory is already in use",
+    )
+    return any(token in message for token in lock_tokens)
+
+
 def _probe_session_via_browser(log=print) -> bool:
     with sync_playwright() as p:
-        context = _get_context(p, headless=True)
+        context = _get_context(p, headless=True, log=log)
         page = context.new_page()
         try:
             _goto_with_retry(page, "https://www.linkedin.com/feed/", log)
@@ -107,10 +203,8 @@ def _clear_session():
 
 # ─── Browser context helper ───────────────────────────────────────────────────
 
-def _get_context(playwright, headless: bool = False):
-    """Launch a persistent browser context with anti-detection measures."""
-    os.makedirs(SESSION_DIR, exist_ok=True)
-    ctx = playwright.chromium.launch_persistent_context(
+def _launch_persistent_context(playwright, *, headless: bool):
+    return playwright.chromium.launch_persistent_context(
         user_data_dir=SESSION_DIR,
         headless=headless,
         viewport={"width": 1280, "height": 800},
@@ -128,6 +222,31 @@ def _get_context(playwright, headless: bool = False):
         ],
         ignore_default_args=["--enable-automation"],
     )
+
+
+def _get_context(playwright, headless: bool = False, log=print):
+    """Launch a persistent browser context with anti-detection measures."""
+    os.makedirs(SESSION_DIR, exist_ok=True)
+    try:
+        ctx = _launch_persistent_context(playwright, headless=headless)
+    except Exception as exc:
+        if not _is_profile_locked_error(exc):
+            raise
+        recovered = _cleanup_stale_profile_locks(log=log)
+        if not recovered:
+            raise RuntimeError(
+                "El perfil de LinkedIn esta bloqueado por otra instancia de Chromium. "
+                "Cierra cualquier ventana de automatizacion abierta y vuelve a intentarlo."
+            ) from exc
+        try:
+            ctx = _launch_persistent_context(playwright, headless=headless)
+        except Exception as retry_exc:
+            if _is_profile_locked_error(retry_exc):
+                raise RuntimeError(
+                    "El perfil de LinkedIn sigue bloqueado despues de limpiar locks viejos. "
+                    "Cierra cualquier navegador Chrome/Chromium usado por la automatizacion y reintenta."
+                ) from retry_exc
+            raise
     ctx.add_init_script(_STEALTH_SCRIPT)
     return ctx
 
@@ -137,60 +256,64 @@ def _get_context(playwright, headless: bool = False):
 def login(email: str, password: str, log=print) -> bool:
     """Open a headed browser, log in to LinkedIn, save the session."""
     log("Abriendo navegador para iniciar sesión en LinkedIn...")
-    with sync_playwright() as p:
-        # Login always headed so user can handle 2FA/CAPTCHA
-        context = _get_context(p, headless=False)
-        page = context.new_page()
-        try:
-            page.goto("https://www.linkedin.com/login",
-                      wait_until="domcontentloaded", timeout=30000)
-            _human_delay(page)
-
-            if "feed" in page.url or "mynetwork" in page.url:
-                log("Sesión ya activa.")
-                _write_session_flag()
-                context.close()
-                return True
-
-            log("Ingresando credenciales...")
-            page.fill("#username", email)
-            _human_delay(page, 0.5, 1.0)
-            page.fill("#password", password)
-            _human_delay(page, 0.5, 1.0)
-            page.click("button[type='submit']")
-
+    _set_login_in_progress(True)
+    try:
+        with sync_playwright() as p:
+            # Login always headed so user can handle 2FA/CAPTCHA
+            context = _get_context(p, headless=False, log=log)
+            page = context.new_page()
             try:
-                page.wait_for_url("**/feed/**", timeout=20000)
-                log("Inicio de sesión exitoso.")
-                _write_session_flag()
-                context.close()
-                return True
-            except PWTimeout:
-                current = page.url
-                if any(k in current for k in ("checkpoint", "challenge", "captcha", "verification")):
-                    log("Verificación requerida (2FA/CAPTCHA). Complétala en el navegador...")
-                    try:
-                        page.wait_for_url("**/feed/**", timeout=180000)
-                        log("Verificación completada.")
-                        _write_session_flag()
-                        context.close()
-                        return True
-                    except PWTimeout:
-                        log("Tiempo de espera agotado para la verificación.")
+                page.goto("https://www.linkedin.com/login",
+                          wait_until="domcontentloaded", timeout=30000)
+                _human_delay(page)
+
+                if "feed" in page.url or "mynetwork" in page.url:
+                    log("Sesión ya activa.")
+                    _write_session_flag()
+                    context.close()
+                    return True
+
+                log("Ingresando credenciales...")
+                page.fill("#username", email)
+                _human_delay(page, 0.5, 1.0)
+                page.fill("#password", password)
+                _human_delay(page, 0.5, 1.0)
+                page.click("button[type='submit']")
+
+                try:
+                    page.wait_for_url("**/feed/**", timeout=20000)
+                    log("Inicio de sesión exitoso.")
+                    _write_session_flag()
+                    context.close()
+                    return True
+                except PWTimeout:
+                    current = page.url
+                    if any(k in current for k in ("checkpoint", "challenge", "captcha", "verification")):
+                        log("Verificación requerida (2FA/CAPTCHA). Complétala en el navegador...")
+                        try:
+                            page.wait_for_url("**/feed/**", timeout=180000)
+                            log("Verificación completada.")
+                            _write_session_flag()
+                            context.close()
+                            return True
+                        except PWTimeout:
+                            log("Tiempo de espera agotado para la verificación.")
+                            context.close()
+                            return False
+                    else:
+                        log(f"No se pudo confirmar el inicio de sesión. URL: {current}")
                         context.close()
                         return False
-                else:
-                    log(f"No se pudo confirmar el inicio de sesión. URL: {current}")
-                    context.close()
-                    return False
 
-        except Exception as e:
-            log(f"Error durante el inicio de sesión: {e}")
-            try:
-                context.close()
-            except Exception:
-                pass
-            return False
+            except Exception as e:
+                log(f"Error durante el inicio de sesión: {e}")
+                try:
+                    context.close()
+                except Exception:
+                    pass
+                return False
+    finally:
+        _set_login_in_progress(False)
 
 
 # ─── Publish post ─────────────────────────────────────────────────────────────
@@ -259,7 +382,7 @@ def collect_feed_signals(limit: int = 8, log=print) -> list[str]:
         return []
 
     with sync_playwright() as p:
-        context = _get_context(p, headless=True)
+        context = _get_context(p, headless=True, log=log)
         page = context.new_page()
         try:
             _goto_with_retry(page, "https://www.linkedin.com/feed/", log)
@@ -366,7 +489,7 @@ def publish_post(post_text: str, image_path: str, log=print, on_screenshot=None)
     log(f"Abriendo navegador {'(headless)' if headless else '(visible)'}...")
 
     with sync_playwright() as p:
-        context = _get_context(p, headless=headless)
+        context = _get_context(p, headless=headless, log=log)
         page = context.new_page()
 
         try:
@@ -410,8 +533,21 @@ def publish_post(post_text: str, image_path: str, log=print, on_screenshot=None)
             snap(page, "05_published")
 
             log("¡Post publicado exitosamente!")
+
+            # ── 6. Capture post URL from success notification ────────────────
+            post_url = ""
+            try:
+                view_link = page.locator("a[href*='/feed/update/']").first
+                view_link.wait_for(timeout=6000)
+                href = view_link.get_attribute("href") or ""
+                if href:
+                    post_url = href if href.startswith("http") else f"https://www.linkedin.com{href}"
+                    log(f"URL del post capturada: {post_url}")
+            except Exception:
+                log("No se pudo capturar la URL del post (se guardará vacía).")
+
             context.close()
-            return {"success": True, "screenshots": screenshots}
+            return {"success": True, "screenshots": screenshots, "post_url": post_url}
 
         except Exception as e:
             log(f"Error al publicar: {e}")
@@ -801,6 +937,363 @@ def _human_delay(page, min_s: float = 0.8, max_s: float = 1.5):
     import random
     ms = int(random.uniform(min_s, max_s) * 1000)
     page.wait_for_timeout(ms)
+
+
+# ─── Metrics scraping ────────────────────────────────────────────────────────
+
+def scrape_post_metrics(post_url: str, *, log=print) -> dict | None:
+    """Navigate to a LinkedIn post URL and extract analytics metrics.
+
+    Returns a dict with the keys impressions, reactions, comments, reposts,
+    saves, link_clicks, profile_visits — using 0 when a particular metric
+    is not exposed by LinkedIn for the current account. Returns None if
+    none of the metrics could be extracted.
+    """
+    if not post_url:
+        log("scrape_post_metrics: URL vacía, saltando.")
+        return None
+
+    headless = _is_headless()
+    log(f"Iniciando scraping de métricas para: {post_url}")
+
+    with sync_playwright() as p:
+        context = _get_context(p, headless=headless, log=log)
+        page = context.new_page()
+        try:
+            _goto_with_retry(page, post_url, log)
+            _human_delay(page, 1.5, 2.5)
+
+            if "login" in page.url or "authwall" in page.url:
+                raise PermissionError("Sesión expirada. Inicia sesión nuevamente.")
+
+            # ── Try to extract visible metrics directly from the post ────────
+            # LinkedIn shows "X reactions · X comments · X reposts" below the post
+            # and a "X impressions" stat for your own posts
+            metrics = page.evaluate("""
+                () => {
+                    const toInt = (txt) => parseInt((txt || '').replace(/[^0-9]/g, '')) || 0;
+
+                    // Impressions: shown as "X impressions" or "X views" on own posts
+                    const impEl = document.querySelector(
+                        '[data-test-id="social-actions__impressions"], '
+                        + '.social-details-social-counts__item--impressions, '
+                        + 'button[aria-label*="impression"], '
+                        + 'span[aria-label*="impression"]'
+                    );
+                    const impressions = impEl ? toInt(impEl.textContent) : 0;
+
+                    // Reactions
+                    const reactEl = document.querySelector(
+                        '.social-details-social-counts__reactions-count, '
+                        + '[data-test-id="social-actions__reaction-count"], '
+                        + 'span.social-details-social-counts__reactions span'
+                    );
+                    const reactions = reactEl ? toInt(reactEl.textContent) : 0;
+
+                    // Comments
+                    const commentEl = document.querySelector(
+                        'button[aria-label*="comment" i], '
+                        + '.social-details-social-counts__comments span, '
+                        + '[data-test-id="social-actions__comments"]'
+                    );
+                    const comments = commentEl ? toInt(commentEl.textContent) : 0;
+
+                    // Reposts
+                    const repostEl = document.querySelector(
+                        'button[aria-label*="repost" i], '
+                        + '[data-test-id="social-actions__reposts"]'
+                    );
+                    const reposts = repostEl ? toInt(repostEl.textContent) : 0;
+
+                    return { impressions, reactions, comments, reposts, saves: 0, link_clicks: 0, profile_visits: 0 };
+                }
+            """)
+
+            # If impressions is still 0, try clicking the analytics link/button
+            if metrics.get("impressions", 0) == 0:
+                log("Impressions no detectadas en DOM directo, intentando panel de analytics...")
+                try:
+                    analytics_trigger = page.locator(
+                        "button[aria-label*='analytic' i], "
+                        "a[href*='analytics'], "
+                        ".analytics-entry-point, "
+                        "span[aria-label*='impression' i]"
+                    ).first
+                    analytics_trigger.click(timeout=5000)
+                    _human_delay(page, 1.0, 1.5)
+                    # Re-run extraction after panel opens — also pull
+                    # saves / link clicks / profile visits when the analytics
+                    # modal exposes them.
+                    metrics = page.evaluate("""
+                        () => {
+                            const toInt = (txt) => parseInt((txt || '').replace(/[^0-9]/g, '')) || 0;
+                            const all = [...document.querySelectorAll('[class*="analytic"], [class*="metric"], [class*="stat"], li, div, span')];
+                            const findText = (labels) => {
+                                const lowered = labels.map(l => l.toLowerCase());
+                                const el = all.find(e => {
+                                    const t = (e.textContent || '').toLowerCase();
+                                    return lowered.some(label => t.includes(label));
+                                });
+                                return el ? toInt(el.textContent) : 0;
+                            };
+                            return {
+                                impressions: findText(['impression', 'impresion', 'view']),
+                                reactions: findText(['reaction', 'reaccion']),
+                                comments: findText(['comment', 'comentario']),
+                                reposts: findText(['repost', 'compartido']),
+                                saves: findText(['save', 'saved', 'guardado']),
+                                link_clicks: findText(['link click', 'click on link', 'clic en enlace']),
+                                profile_visits: findText(['profile view', 'visita al perfil', 'profile visit']),
+                            };
+                        }
+                    """)
+                except Exception as click_err:
+                    log(f"No se pudo abrir el panel de analytics: {click_err}")
+
+            # Defensive: ensure all expected keys exist (older callers expect 4 fields).
+            for key in ("impressions", "reactions", "comments", "reposts", "saves", "link_clicks", "profile_visits"):
+                metrics.setdefault(key, 0)
+
+            log(f"Métricas extraídas: {metrics}")
+            context.close()
+            return metrics if any(v > 0 for v in metrics.values()) else None
+
+        except Exception as exc:
+            log(f"Error en scrape_post_metrics: {exc}")
+            try:
+                context.close()
+            except Exception:
+                pass
+            return None
+
+
+# ─── Messaging automation ────────────────────────────────────────────────────
+
+def _locator_first_text(root, selectors: list[str]) -> str:
+    for selector in selectors:
+        try:
+            locator = root.locator(selector).first
+            if locator.count() <= 0:
+                continue
+            text = re.sub(r"\s+", " ", locator.inner_text(timeout=2000)).strip()
+            if text:
+                return text
+        except Exception:
+            continue
+    return ""
+
+
+def _locator_digit_count(root, selectors: list[str]) -> int:
+    for selector in selectors:
+        try:
+            locator = root.locator(selector).first
+            if locator.count() <= 0:
+                continue
+            text = re.sub(r"\D+", "", locator.inner_text(timeout=1500) or "")
+            if text:
+                return int(text)
+        except Exception:
+            continue
+    return 0
+
+
+def fetch_inbox_threads(limit: int = 15, *, log=print) -> list[dict]:
+    if not is_session_valid():
+        return []
+
+    headless = _is_headless()
+    with sync_playwright() as p:
+        context = _get_context(p, headless=headless, log=log)
+        page = context.new_page()
+        try:
+            log("Abriendo inbox de LinkedIn...")
+            _goto_with_retry(page, "https://www.linkedin.com/messaging/", log)
+            _human_delay(page, 1.5, 2.0)
+            rows = page.locator("li.msg-conversation-listitem, .msg-conversation-listitem")
+            row_count = min(rows.count(), max(0, int(limit)))
+            seen: set[str] = set()
+            out: list[dict] = []
+
+            for index in range(row_count):
+                row = rows.nth(index)
+                row.scroll_into_view_if_needed(timeout=5000)
+                _human_delay(page, 0.1, 0.2)
+
+                contact_name = _locator_first_text(
+                    row,
+                    [
+                        ".msg-conversation-listitem__participant-names",
+                        ".msg-conversation-card__participant-names",
+                        "h3",
+                    ],
+                ) or f"Contacto {index + 1}"
+                latest_snippet = _locator_first_text(
+                    row,
+                    [
+                        ".msg-conversation-card__message-snippet",
+                        ".msg-conversation-listitem__message-snippet",
+                        "p",
+                    ],
+                )
+                last_message_at = _locator_first_text(
+                    row,
+                    [
+                        "time",
+                        ".msg-conversation-listitem__time-stamp",
+                    ],
+                )
+                row_text = ""
+                try:
+                    row_text = re.sub(r"\s+", " ", row.inner_text(timeout=2000)).strip()
+                except Exception:
+                    row_text = ""
+                unread_count = _locator_digit_count(
+                    row,
+                    [
+                        ".notification-badge__count",
+                        ".msg-conversation-card__unread-count",
+                        ".msg-conversation-listitem__unread-count",
+                        ".artdeco-pill",
+                    ],
+                )
+
+                click_target = row.locator(
+                    ".msg-conversation-listitem__link, .msg-conversation-card, [tabindex='0']"
+                ).first
+                try:
+                    click_target.click(timeout=5000)
+                    page.wait_for_timeout(1200)
+                except Exception as exc:
+                    log(f"No se pudo abrir la conversación #{index + 1}: {exc}")
+                    continue
+
+                thread_url = str(page.url or "").strip()
+                if not thread_url:
+                    continue
+                thread_key = thread_url
+                if thread_key in seen:
+                    continue
+                seen.add(thread_key)
+                contact_profile_url = ""
+                try:
+                    contact_profile_url = page.locator(".msg-thread__link-to-profile").first.get_attribute("href", timeout=2000) or ""
+                except Exception:
+                    contact_profile_url = ""
+
+                out.append(
+                    {
+                        "thread_key": thread_key,
+                        "thread_url": thread_url,
+                        "contact_name": contact_name,
+                        "latest_snippet": latest_snippet or row_text[:180],
+                        "last_message_at": last_message_at,
+                        "unread_count": unread_count,
+                        "contact_profile_url": contact_profile_url,
+                    }
+                )
+                if len(out) >= limit:
+                    break
+            return out
+        finally:
+            context.close()
+
+
+def fetch_conversation(thread_url: str, *, log=print, limit: int = 30) -> dict | None:
+    if not thread_url or not is_session_valid():
+        return None
+
+    headless = _is_headless()
+    with sync_playwright() as p:
+        context = _get_context(p, headless=headless, log=log)
+        page = context.new_page()
+        try:
+            _goto_with_retry(page, thread_url, log)
+            _human_delay(page, 1.2, 1.8)
+            page.wait_for_timeout(1200)
+            data = page.evaluate(
+                """(limit) => {
+                    const normalized = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+                    const rawContactName = normalized(
+                      document.querySelector('.msg-thread__link-to-profile .artdeco-entity-lockup__title')?.innerText
+                      || document.querySelector('.msg-thread__link-to-profile span[dir="ltr"]')?.innerText
+                      || document.querySelector('.msg-thread__heading')?.innerText
+                      || document.querySelector('h2')?.innerText
+                    ) || 'Contacto';
+                    const contactName = rawContactName
+                      .split('Estado:')[0]
+                      .split('•')[0]
+                      .trim() || 'Contacto';
+                    const nodes = Array.from(document.querySelectorAll(
+                      '.msg-s-message-list__event, .msg-s-event-listitem, li.msg-s-message-list__event'
+                    ));
+                    const items = [];
+                    for (const node of nodes.slice(-limit)) {
+                      const text = normalized(
+                        node.querySelector('.msg-s-event-listitem__body, .msg-s-event-listitem__message-bubble, .msg-s-message-group__messages')?.innerText
+                        || node.innerText
+                      );
+                      if (!text) continue;
+                      const rootText = normalized(node.innerText).toLowerCase();
+                      const own = node.className.includes('--me') || rootText.startsWith('tu ') || rootText.startsWith('tú ') || rootText.includes('you sent');
+                      items.push({
+                        sender_role: own ? 'self' : 'contact',
+                        sender_name: own ? 'Yo' : contactName,
+                        text,
+                        happened_at: normalized(node.querySelector('time')?.getAttribute('datetime') || node.querySelector('time')?.innerText || ''),
+                        external_message_id: node.getAttribute('data-id') || '',
+                      });
+                    }
+                    return {
+                      thread_url: window.location.href,
+                      contact_name: contactName,
+                      latest_snippet: items.length ? items[items.length - 1].text.slice(0, 180) : '',
+                      last_message_at: items.length ? items[items.length - 1].happened_at : '',
+                      contact_profile_url: document.querySelector('.msg-thread__link-to-profile')?.href || '',
+                      unread_count: 0,
+                      messages: items,
+                    };
+                }""",
+                limit,
+            )
+            return dict(data or {})
+        finally:
+            context.close()
+
+
+def send_message_reply(thread_url: str, message_text: str, *, log=print) -> None:
+    if not thread_url or not str(message_text or "").strip():
+        raise ValueError("Faltan thread_url o message_text para responder.")
+    if not is_session_valid():
+        raise PermissionError("No hay sesión activa de LinkedIn.")
+
+    headless = _is_headless()
+    with sync_playwright() as p:
+        context = _get_context(p, headless=headless, log=log)
+        page = context.new_page()
+        try:
+            _goto_with_retry(page, thread_url, log)
+            _human_delay(page, 1.0, 1.5)
+
+            editor = page.locator(
+                "div.msg-form__contenteditable[contenteditable='true'], "
+                "div[role='textbox'][contenteditable='true'], "
+                "div[contenteditable='true'][data-artdeco-is-focused='true']"
+            ).first
+            editor.wait_for(timeout=10000)
+            editor.click()
+            editor.fill("")
+            editor.type(message_text, delay=18)
+            _human_delay(page, 0.4, 0.7)
+
+            send_button = page.locator(
+                "button.msg-form__send-button, "
+                "button[aria-label*='Enviar' i], "
+                "button[aria-label*='Send' i]"
+            ).first
+            send_button.click()
+            _human_delay(page, 1.0, 1.4)
+        finally:
+            context.close()
 
 
 # ─── Post history (local) ─────────────────────────────────────────────────────

@@ -86,7 +86,7 @@ def test_run_feedback_pipeline_retries_candidates_when_topic_is_repetitive(monke
     monkeypatch.setattr(
         pipeline.image_gen,
         "generate_image",
-        lambda brief, category_cfg=None: {
+        lambda brief, category_cfg=None, progress_callback=None: {
             "image_path": "/tmp/test.jpg",
             "image_url": "/static/generated/test.jpg",
             "image_desc": "desc",
@@ -94,6 +94,10 @@ def test_run_feedback_pipeline_retries_candidates_when_topic_is_repetitive(monke
             "visual_style": brief["visual_style"],
             "composition_type": "editorial portrait",
             "color_direction": "deep blues",
+            "image_alignment_score": 8.7,
+            "image_selection_reason": "La variante elegida representa mejor el argumento.",
+            "image_prompt_family": "literal_editorial",
+            "image_brief": {"core_idea": "Liderazgo distribuido con claridad"},
         },
     )
 
@@ -111,6 +115,8 @@ def test_run_feedback_pipeline_retries_candidates_when_topic_is_repetitive(monke
 
     assert calls["count"] == 2
     assert payload["topic"] == "Liderazgo en equipos distribuidos con IA"
+    assert payload["image_alignment_score"] == 8.7
+    assert payload["image_prompt_family"] == "literal_editorial"
 
 
 def test_run_feedback_pipeline_regenerates_copy_until_it_passes(monkeypatch):
@@ -163,7 +169,7 @@ def test_run_feedback_pipeline_regenerates_copy_until_it_passes(monkeypatch):
     monkeypatch.setattr(
         pipeline.image_gen,
         "generate_image",
-        lambda brief, category_cfg=None: {
+        lambda brief, category_cfg=None, progress_callback=None: {
             "image_path": "/tmp/test.jpg",
             "image_url": "/static/generated/test.jpg",
             "image_desc": "desc",
@@ -228,7 +234,7 @@ def test_run_feedback_pipeline_rotates_visual_style_when_recent_history_is_satur
         },
     )
 
-    def fake_generate_image(brief, category_cfg=None):
+    def fake_generate_image(brief, category_cfg=None, progress_callback=None):
         styles_seen.append(brief["visual_style"])
         return {
             "image_path": "/tmp/test.jpg",
@@ -256,7 +262,103 @@ def test_run_feedback_pipeline_rotates_visual_style_when_recent_history_is_satur
     assert payload["visual_style"] != "editorial"
 
 
-def test_run_feedback_pipeline_raises_when_publish_gate_fails(monkeypatch):
+def test_validate_topic_coherence_accepts_semantic_rephrase():
+    brief = {
+        "topic": "La diferencia entre incorporar IA a un flujo y depender de ella sin criterio",
+    }
+    post = {
+        "topic": "La diferencia entre integrar IA en flujos de trabajo y depender de ella sin criterio",
+        "post_text": (
+            "La diferencia entre integrar IA en flujos de trabajo y depender de ella sin criterio "
+            "aparece cuando el equipo delega criterio, no solo tareas."
+        ),
+    }
+
+    result = pipeline.validate_topic_coherence(brief, post)
+
+    assert result["passed"] is True
+    assert result["score"] >= 0.5
+    assert result["keywords"]
+
+
+def test_validate_topic_coherence_rejects_unrelated_topic():
+    brief = {
+        "topic": "La diferencia entre incorporar IA a un flujo y depender de ella sin criterio",
+    }
+    post = {
+        "topic": "Como construir marca personal en LinkedIn sin sonar generico",
+        "post_text": (
+            "Construir marca personal exige consistencia, ejemplos concretos y una voz reconocible "
+            "para destacar sin repetir formulas vacias."
+        ),
+    }
+
+    result = pipeline.validate_topic_coherence(brief, post)
+
+    assert result["passed"] is False
+    assert result["issues"]
+    assert result["issues"][0].startswith("incluye literalmente")
+
+
+def test_run_feedback_pipeline_accepts_paraphrased_topic_in_publish_gate(monkeypatch):
+    monkeypatch.setattr(
+        pipeline.trends,
+        "get_topic_candidates",
+        lambda category_cfg=None, diversify_hint="": {
+            "evidence": [],
+            "topic_candidates": [
+                {
+                    "topic": "La diferencia entre incorporar IA a un flujo y depender de ella sin criterio",
+                    "why_now": "Muchos equipos confunden velocidad con claridad operativa.",
+                    "pillar": "ai",
+                    "freshness_score": 0.86,
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        pipeline.content,
+        "generate_post",
+        lambda brief, history, category_cfg=None, feedback="": {
+            "topic": "La diferencia entre integrar IA en flujos de trabajo y depender de ella sin criterio",
+            "reasoning": "reformula el tema sin cambiar la tesis",
+            "post_text": (
+                "Integrar IA al flujo no es lo mismo que entregarle el criterio.\n\n"
+                "Cuando un equipo automatiza sin definir que decision sigue siendo humana, "
+                "la velocidad aparente tapa deuda operativa, contexto difuso y errores que luego "
+                "cuestan mas corregir.\n\n"
+                "Que decision de tu flujo nunca delegarias sin un marco claro? #IA #Ops"
+            ),
+            "hook_type": "clarity",
+            "cta_type": brief["cta_type"],
+            "angle_signature": "automatizar sin delegar el criterio",
+        },
+    )
+    monkeypatch.setattr(
+        pipeline.image_gen,
+        "generate_image",
+        lambda brief, category_cfg=None, progress_callback=None: {
+            "image_path": "/tmp/test.jpg",
+            "image_url": "/static/generated/test.jpg",
+            "image_desc": "desc",
+            "prompt_used": "prompt",
+            "visual_style": brief["visual_style"],
+            "composition_type": "editorial portrait",
+            "color_direction": "deep blues",
+        },
+    )
+
+    payload = pipeline.run_feedback_pipeline(
+        category_cfg={"name": "default", "post_length": 80, "language": "es", "hashtag_count": 2},
+        history_fetcher=lambda limit: [],
+    )
+
+    assert payload["publish_readiness"]["passed"] is True
+    assert payload["publish_readiness"]["topic_coherence"]["passed"] is True
+    assert "integrar ia en flujos de trabajo" in payload["topic"].lower()
+
+
+def test_run_feedback_pipeline_reports_gate_issues_without_raising(monkeypatch):
     monkeypatch.setattr(
         pipeline.trends,
         "get_topic_candidates",
@@ -293,7 +395,7 @@ def test_run_feedback_pipeline_raises_when_publish_gate_fails(monkeypatch):
     monkeypatch.setattr(
         pipeline.image_gen,
         "generate_image",
-        lambda brief, category_cfg=None: {
+        lambda brief, category_cfg=None, progress_callback=None: {
             "image_path": "",
             "image_url": "",
             "image_desc": "desc",
@@ -304,13 +406,141 @@ def test_run_feedback_pipeline_raises_when_publish_gate_fails(monkeypatch):
         },
     )
 
+    payload = pipeline.run_feedback_pipeline(
+        category_cfg={"name": "default", "post_length": 80, "language": "es"},
+        history_fetcher=lambda limit: [],
+    )
+    readiness = payload.get("publish_readiness", {})
+    assert readiness.get("passed") is False
+    assert any("imagen" in issue.lower() for issue in readiness.get("issues", []))
+
+
+def test_run_feedback_pipeline_raises_clear_error_when_image_generation_fails(monkeypatch):
+    monkeypatch.setattr(
+        pipeline.trends,
+        "get_topic_candidates",
+        lambda category_cfg=None, diversify_hint="": {
+            "evidence": [],
+            "topic_candidates": [
+                {
+                    "topic": "Tema nuevo",
+                    "why_now": "Tema actual.",
+                    "pillar": "productivity",
+                    "freshness_score": 0.8,
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        pipeline.content,
+        "generate_post",
+        lambda brief, history, category_cfg=None, feedback="": {
+            "topic": brief["topic"],
+            "reasoning": "ok",
+            "post_text": (
+                "Tema nuevo con un enfoque especifico.\n\n"
+                "Una buena decision operativa reduce friccion antes de sumar herramientas. "
+                "Cuando el equipo ordena criterio, ownership y handoffs, la velocidad mejora sin maquillaje.\n\n"
+                "Que friccion revisarias primero? #Ops #AI"
+            ),
+            "hook_type": "clarity",
+            "cta_type": brief["cta_type"],
+            "angle_signature": "operacion antes que herramienta",
+        },
+    )
+    monkeypatch.setattr(
+        pipeline.image_gen,
+        "generate_image",
+        lambda brief, category_cfg=None, progress_callback=None: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
     with pytest.raises(pipeline.PipelineStageError) as exc:
         pipeline.run_feedback_pipeline(
             category_cfg={"name": "default", "post_length": 80, "language": "es"},
             history_fetcher=lambda limit: [],
         )
 
-    assert exc.value.step == 6
+    assert exc.value.step == 5
+    assert "imagen válida" in str(exc.value)
+
+
+def test_run_feedback_pipeline_injects_metrics_feedback_into_generate_post(monkeypatch):
+    """The copy-generation step must receive metrics-derived feedback when posts
+    with metrics exist in the DB."""
+    captured_feedback: list[str] = []
+
+    monkeypatch.setattr(
+        pipeline.trends,
+        "get_topic_candidates",
+        lambda category_cfg=None, diversify_hint="": {
+            "evidence": [],
+            "topic_candidates": [
+                {
+                    "topic": "Decisiones de producto bajo presión real",
+                    "why_now": "Las empresas piden criterio mas que frameworks.",
+                    "pillar": "leadership",
+                    "freshness_score": 0.9,
+                }
+            ],
+        },
+    )
+
+    def fake_generate_post(brief, history, category_cfg=None, feedback=""):
+        captured_feedback.append(feedback)
+        return {
+            "topic": brief["topic"],
+            "reasoning": "ok",
+            "post_text": (
+                "Las decisiones de producto que recordamos son las que se sostuvieron sin aplausos en su momento.\n\n"
+                "Cuando un equipo confunde velocidad con criterio, los siguientes seis meses se vuelven retrabajo "
+                "disfrazado de progreso. La señal real no es cuantos features lanzamos, es cuantos pudimos sostener.\n\n"
+                "Que decision incomoda evitaste y cuanto te costo despues?"
+            ),
+            "hook_type": "clarity",
+            "cta_type": brief["cta_type"],
+            "angle_signature": "criterio bajo presion",
+        }
+
+    monkeypatch.setattr(pipeline.content, "generate_post", fake_generate_post)
+    monkeypatch.setattr(
+        pipeline.image_gen,
+        "generate_image",
+        lambda brief, category_cfg=None, progress_callback=None: {
+            "image_path": "/tmp/test.jpg",
+            "image_url": "/static/generated/test.jpg",
+            "image_desc": "desc",
+            "prompt_used": "prompt",
+            "visual_style": brief["visual_style"],
+            "composition_type": "editorial portrait",
+            "color_direction": "deep blues",
+            "image_alignment_score": 8.7,
+            "image_selection_reason": "ok",
+            "image_prompt_family": "literal_editorial",
+            "image_brief": {"core_idea": "criterio"},
+        },
+    )
+
+    # Patch the loader directly so this test stays focused on the *wiring*
+    # between _load_metrics_feedback and content.generate_post. The contents
+    # of the feedback string are exhaustively covered in tests/test_metrics.py.
+    sentinel_feedback = (
+        "RETROALIMENTACIÓN DERIVADA DE MÉTRICAS REALES (basada en 4 posts):\n\n"
+        "PATRONES QUE ESTÁN FUNCIONANDO:\n- Hook 'contrarian' lidera.\n\n"
+        "PATRONES A EVITAR:\n- Hook 'clarity' rinde peor."
+    )
+    monkeypatch.setattr(pipeline, "_load_metrics_feedback", lambda: sentinel_feedback)
+
+    payload = pipeline.run_feedback_pipeline(
+        category_cfg={"name": "default", "post_length": 120, "language": "es"},
+        history_fetcher=lambda limit: [],
+    )
+
+    assert captured_feedback, "generate_post should have been called at least once"
+    first_feedback = captured_feedback[0]
+    assert sentinel_feedback in first_feedback
+    assert "PATRONES QUE ESTÁN FUNCIONANDO" in first_feedback
+    # The payload should also expose the metrics feedback for the UI to render.
+    assert payload.get("metrics_feedback") == sentinel_feedback
 
 
 def test_build_content_brief_respects_new_category_preferences():

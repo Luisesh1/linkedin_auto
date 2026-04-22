@@ -7,6 +7,7 @@
 let currentSessionId = null;
 let currentTestMode = false;
 let currentCategory = "";
+let currentResolvedCategory = "";
 let eventSource = null;
 let loginPollInterval = null;
 let publishPollInterval = null;
@@ -17,6 +18,8 @@ let historyPage = 1;
 let historyTotalPages = 1;
 let historySearch = "";
 let lastPipelineStateSignature = "";
+let analyticsPeriod = "30d";
+const analyticsCharts = {};
 
 const PIPELINE_SESSION_STORAGE_KEY = "autolinkedin.pipeline.session";
 const APP_BOOTSTRAP = window.APP_BOOTSTRAP || {};
@@ -52,6 +55,7 @@ async function apiFetch(url, options = {}) {
 document.addEventListener("DOMContentLoaded", async () => {
   if (document.getElementById("auth-status-text")) checkAuthStatus();
   if (document.getElementById("history-container")) loadHistory();
+  if (document.getElementById("analytics-card")) loadAnalytics();
   if (document.getElementById("headless-toggle")) loadHeadlessSetting();
   if (document.getElementById("schedule-card")) loadSchedule();
   if (document.getElementById("pipeline-category") || document.getElementById("category-list")) await loadCategories();
@@ -60,7 +64,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   if (pipelineCategorySelect) {
     pipelineCategorySelect.addEventListener("change", () => {
       currentCategory = getSelectedCategoryName();
+      currentResolvedCategory = currentCategory === "random" ? "" : currentCategory;
       renderSelectedCategorySummary(currentCategory);
+      renderResolvedCategoryBanner(currentCategory, currentResolvedCategory);
       persistPipelineSessionState();
     });
   }
@@ -132,6 +138,14 @@ function updateAuthBanner(data) {
   const loginBtn = document.getElementById("login-btn");
   const disconnectBtn = document.getElementById("disconnect-btn");
   if (!statusEl || !loginBtn || !disconnectBtn) return;
+
+  if (data.login_in_progress) {
+    statusEl.className = "badge fs-6 px-3 py-2 bg-warning text-dark";
+    statusEl.innerHTML = '<i class="bi bi-browser-chrome me-1"></i> Conectando LinkedIn...';
+    loginBtn.classList.add("d-none");
+    disconnectBtn.classList.add("d-none");
+    return;
+  }
 
   if (data.authenticated) {
     const days = data.days_left;
@@ -264,10 +278,12 @@ function startTestPipeline() {
 function runPipeline(testMode = false) {
   currentTestMode = testMode;
   currentCategory = getSelectedCategoryName();
+  currentResolvedCategory = currentCategory === "random" ? "" : currentCategory;
   stopPipelineStatePolling();
   resetUI();
   const stepsPanel = document.getElementById("steps-panel");
   if (stepsPanel) stepsPanel.classList.remove("d-none");
+  renderResolvedCategoryBanner(currentCategory, currentResolvedCategory);
 
   setPipelineButtonsBusy(testMode);
 
@@ -286,7 +302,7 @@ function rerunFromStep(step) {
   if (publishError) publishError.classList.add("d-none");
   const publishProgress = document.getElementById("publish-progress");
   if (publishProgress) publishProgress.classList.add("d-none");
-  for (let i = step; i <= 7; i++) {
+  for (let i = step; i <= 6; i++) {
     const icon = document.getElementById(`icon-${i}`);
     if (icon) icon.innerHTML = '<i class="bi bi-circle text-muted"></i>';
     const d = document.getElementById(`detail-${i}`);
@@ -329,6 +345,9 @@ function handleSSEEvent(data) {
   // Init event: capture session_id early so regen buttons work
   if (data.type === "init") {
     currentSessionId = data.session_id;
+    currentCategory = data.requested_category || currentCategory || getSelectedCategoryName();
+    currentResolvedCategory = data.resolved_category || currentResolvedCategory || "";
+    renderResolvedCategoryBanner(currentCategory, currentResolvedCategory);
     persistPipelineSessionState();
     return;
   }
@@ -348,7 +367,7 @@ function handleSSEEvent(data) {
     setStepRunning(step, data.message);
   } else if (status === "done") {
     setStepDone(step, data.result);
-    if (step >= 1 && step <= 6) {
+    if (step >= 1 && step <= 5) {
       const rb = document.getElementById(`regen-${step}`);
       if (rb) rb.classList.remove("d-none");
     }
@@ -359,7 +378,7 @@ function handleSSEEvent(data) {
     eventSource.close();
   } else if (status === "preview") {
     if (!data.test_mode) currentSessionId = data.session_id;
-    setStepDone(7, data.test_mode ? "Vista previa generada (modo prueba)" : "Listo para publicar");
+    setStepDone(6, data.test_mode ? "Vista previa generada (modo prueba)" : "Listo para publicar");
     showPreviewPanel(data);
     resetAllBtns();
     const regenerateBtn = document.getElementById("regenerate-btn");
@@ -390,6 +409,11 @@ function setStepDone(step, result) {
     summary = `${result.length} temas: ${result.slice(0, 3).join(", ")}${result.length > 3 ? "..." : ""}`;
   } else if (typeof result === "object" && result !== null) {
     if (result.topic) summary = `Tema: ${result.topic}`;
+    else if (result.selected_family) {
+      const family = String(result.selected_family).replaceAll("_", " ");
+      const score = typeof result.score !== "undefined" ? ` · score ${Number(result.score).toFixed(1)}` : "";
+      summary = `Imagen elegida: ${family}${score}`;
+    }
     else if (result.image_url) summary = "Imagen generada correctamente";
     else if (typeof result.score !== "undefined") summary = `Score: ${result.score}`;
     else summary = Object.values(result).join(" · ").substring(0, 80);
@@ -423,8 +447,9 @@ function showPreviewPanel(data) {
   if (postTextarea) postTextarea.value = data.post_text;
   const topicBadge = document.getElementById("preview-topic-badge");
   if (topicBadge) topicBadge.textContent = data.topic;
-  if (data.category) {
-    if (topicBadge) topicBadge.textContent = `${data.category} · ${data.topic}`;
+  const resolvedCategory = data.resolved_category || data.category || currentResolvedCategory || "";
+  if (resolvedCategory) {
+    if (topicBadge) topicBadge.textContent = `${resolvedCategory} · ${data.topic}`;
   }
 
   if (data.reasoning) {
@@ -566,6 +591,223 @@ function renderScreenshots(urls) {
 
 // ── History ────────────────────────────────────────────────────────────────
 
+function setAnalyticsPeriod(period) {
+  analyticsPeriod = period;
+  document.querySelectorAll("#period-filter .btn").forEach(btn => {
+    btn.classList.toggle("active", btn.textContent.trim().toLowerCase() === period);
+  });
+  loadAnalytics();
+}
+
+async function loadAnalytics() {
+  const summaryEl = document.getElementById("analytics-summary");
+  const recommendationsEl = document.getElementById("analytics-recommendations");
+  const insightsEl = document.getElementById("analytics-insights");
+  if (!summaryEl || !recommendationsEl || !insightsEl) return;
+
+  try {
+    const res = await apiFetch(`/api/analytics/summary?period=${analyticsPeriod}`);
+    const data = await res.json();
+    renderAnalytics(data);
+    renderTrendChart(data.trend_data || []);
+    renderComparisonCharts(data.insights || {});
+  } catch {
+    summaryEl.innerHTML = '<p class="text-danger small mb-0">No se pudo cargar la analítica.</p>';
+    recommendationsEl.innerHTML = "";
+    insightsEl.innerHTML = "";
+  }
+  // Refresh the companion sections (pipeline feedback + metrics collector)
+  // in parallel — they live in the same card and should stay in sync.
+  loadPipelineFeedback();
+  loadMetricsCollectionStatus();
+}
+
+
+function renderAnalytics(data) {
+  const summaryEl = document.getElementById("analytics-summary");
+  const recommendationsEl = document.getElementById("analytics-recommendations");
+  const insightsEl = document.getElementById("analytics-insights");
+  if (!summaryEl || !recommendationsEl || !insightsEl) return;
+
+  const summary = data.summary || {};
+  summaryEl.innerHTML = `
+    <div class="row g-3">
+      <div class="col-sm-6 col-lg-3">
+        <div class="border rounded p-3 h-100">
+          <div class="text-muted small">Posts con métricas</div>
+          <div class="fs-4 fw-semibold">${summary.tracked_posts || 0}</div>
+        </div>
+      </div>
+      <div class="col-sm-6 col-lg-3">
+        <div class="border rounded p-3 h-100">
+          <div class="text-muted small">Impresiones totales</div>
+          <div class="fs-4 fw-semibold">${formatNumber(summary.total_impressions || 0)}</div>
+        </div>
+      </div>
+      <div class="col-sm-6 col-lg-3">
+        <div class="border rounded p-3 h-100">
+          <div class="text-muted small">Engagement promedio</div>
+          <div class="fs-4 fw-semibold">${formatPercent(summary.avg_engagement_rate || 0)}</div>
+        </div>
+      </div>
+      <div class="col-sm-6 col-lg-3">
+        <div class="border rounded p-3 h-100">
+          <div class="text-muted small">Comentarios promedio</div>
+          <div class="fs-4 fw-semibold">${summary.avg_comments || 0}</div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const recommendations = data.recommendations || [];
+  recommendationsEl.innerHTML = recommendations.length
+    ? `
+      <h6 class="text-muted mb-2">Ajustes sugeridos</h6>
+      <ul class="mb-0">
+        ${recommendations.map(item => `<li>${escapeHtml(item)}</li>`).join("")}
+      </ul>
+    `
+    : "";
+
+  const topPosts = data.top_posts || [];
+  const insightGroups = data.insights || {};
+  const cards = [
+    renderInsightCard("Mejores hooks", insightGroups.hook_type || []),
+    renderInsightCard("Mejores CTAs", insightGroups.cta_type || []),
+    renderInsightCard("Mejor estilo visual", insightGroups.visual_style || []),
+    renderInsightCard("Mejor longitud", insightGroups.length_bucket || []),
+  ].filter(Boolean);
+
+  const topPostsHtml = topPosts.length
+    ? `
+      <div class="mt-3">
+        <h6 class="text-muted mb-2">Top posts por engagement</h6>
+        <div class="d-grid gap-2">
+          ${topPosts.map(post => `
+            <div class="border rounded p-2">
+              <div class="d-flex justify-content-between gap-2 flex-wrap">
+                <strong>${escapeHtml(post.topic || "Sin tema")}</strong>
+                <span class="badge bg-success">${formatPercent(post.engagement_rate || 0)}</span>
+              </div>
+              <div class="small text-muted mt-1">
+                ${formatNumber(post.impressions || 0)} impresiones · ${post.comments || 0} comentarios · ${post.saves || 0} guardados
+              </div>
+            </div>
+          `).join("")}
+        </div>
+      </div>
+    `
+    : "";
+
+  insightsEl.innerHTML = cards.length || topPostsHtml
+    ? `
+      <div class="row g-3">
+        ${cards.join("")}
+      </div>
+      ${topPostsHtml}
+    `
+    : '<p class="text-muted small mb-0">Agrega métricas a los posts para ver aprendizajes.</p>';
+}
+
+
+function renderInsightCard(title, rows) {
+  if (!rows.length) return "";
+  const best = rows[0];
+  return `
+    <div class="col-md-6 col-xl-3">
+      <div class="border rounded p-3 h-100">
+        <div class="text-muted small">${escapeHtml(title)}</div>
+        <div class="fw-semibold mt-1">${escapeHtml(best.key || "unknown")}</div>
+        <div class="small text-muted mt-2">
+          ${formatPercent(best.avg_engagement_rate || 0)} engagement · ${Math.round(best.avg_impressions || 0)} impresiones promedio
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+
+function _destroyChart(id) {
+  if (analyticsCharts[id]) {
+    analyticsCharts[id].destroy();
+    delete analyticsCharts[id];
+  }
+}
+
+function renderTrendChart(trendData) {
+  _destroyChart("chart-trend");
+  const trendSection = document.getElementById("analytics-trend");
+  const ctx = document.getElementById("chart-trend");
+  if (!trendSection || !ctx) return;
+
+  const withData = trendData.filter(d => d.posts_count > 0);
+  if (withData.length < 2) {
+    trendSection.style.display = "none";
+    return;
+  }
+  trendSection.style.display = "";
+
+  analyticsCharts["chart-trend"] = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels: withData.map(d => d.date),
+      datasets: [{
+        label: "Engagement %",
+        data: withData.map(d => +(d.avg_engagement_rate * 100).toFixed(2)),
+        borderColor: "#0d6efd",
+        backgroundColor: "rgba(13,110,253,0.08)",
+        tension: 0.35,
+        fill: true,
+        pointRadius: 3,
+      }],
+    },
+    options: {
+      plugins: { legend: { display: false } },
+      scales: { y: { min: 0, ticks: { callback: v => v + "%" } } },
+    },
+  });
+}
+
+function _renderBarChart(canvasId, rows) {
+  _destroyChart(canvasId);
+  const ctx = document.getElementById(canvasId);
+  if (!ctx || !rows.length) return;
+
+  analyticsCharts[canvasId] = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels: rows.map(r => r.key || "—"),
+      datasets: [{
+        data: rows.map(r => +(r.avg_engagement_rate * 100).toFixed(2)),
+        backgroundColor: rows.map((_, i) => `hsla(${210 + i * 30}, 70%, 55%, 0.75)`),
+        borderRadius: 4,
+      }],
+    },
+    options: {
+      indexAxis: "y",
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { min: 0, ticks: { callback: v => v + "%" } },
+      },
+    },
+  });
+}
+
+function renderComparisonCharts(insights) {
+  const chartsSection = document.getElementById("analytics-charts");
+  const hasData = ["category", "hook_type", "hour_bucket", "content_format"]
+    .some(k => (insights[k] || []).length > 0);
+
+  if (!chartsSection) return;
+  chartsSection.style.display = hasData ? "" : "none";
+
+  _renderBarChart("chart-category", insights.category || []);
+  _renderBarChart("chart-hook", insights.hook_type || []);
+  _renderBarChart("chart-hour", insights.hour_bucket || []);
+  _renderBarChart("chart-format", insights.content_format || []);
+}
+
+
 async function loadHistory() {
   const container = document.getElementById("history-container");
   if (!container) return;
@@ -617,6 +859,50 @@ async function loadHistory() {
               </div>
               <p class="mb-0 mt-1 text-muted small">${escapeHtml((p.post_text || "").substring(0, 120))}${(p.post_text || "").length > 120 ? "..." : ""}</p>
               ${descHtml}
+              <div class="d-flex flex-wrap gap-2 mt-2 small">
+                <span class="badge text-bg-light border">Imp: ${formatNumber(p.impressions || 0)}</span>
+                <span class="badge text-bg-light border">React: ${formatNumber(p.reactions || 0)}</span>
+                <span class="badge text-bg-light border">Com: ${formatNumber(p.comments || 0)}</span>
+                <span class="badge text-bg-light border">Sav: ${formatNumber(p.saves || 0)}</span>
+                <span class="badge ${p.engagement_rate ? "bg-success" : "bg-secondary"}">${formatPercent(p.engagement_rate || 0)}</span>
+              </div>
+              <div class="row g-2 mt-2">
+                <div class="col-6 col-md-2">
+                  <input id="metric-impressions-${p.id}" type="number" min="0" class="form-control form-control-sm" placeholder="Imp" value="${p.impressions || 0}">
+                </div>
+                <div class="col-6 col-md-2">
+                  <input id="metric-reactions-${p.id}" type="number" min="0" class="form-control form-control-sm" placeholder="React" value="${p.reactions || 0}">
+                </div>
+                <div class="col-6 col-md-2">
+                  <input id="metric-comments-${p.id}" type="number" min="0" class="form-control form-control-sm" placeholder="Com" value="${p.comments || 0}">
+                </div>
+                <div class="col-6 col-md-2">
+                  <input id="metric-saves-${p.id}" type="number" min="0" class="form-control form-control-sm" placeholder="Sav" value="${p.saves || 0}">
+                </div>
+                <div class="col-6 col-md-2">
+                  <input id="metric-clicks-${p.id}" type="number" min="0" class="form-control form-control-sm" placeholder="Clicks" value="${p.link_clicks || 0}">
+                </div>
+                <div class="col-6 col-md-2 d-grid">
+                  <button class="btn btn-sm btn-outline-primary" onclick="savePostMetrics(${p.id})">
+                    Guardar métricas
+                  </button>
+                </div>
+                <div class="col-6 col-md-2 d-grid">
+                  <button id="scrape-btn-${p.id}"
+                    class="btn btn-sm btn-outline-secondary"
+                    onclick="scrapePostMetrics(${p.id})"
+                    ${p.linkedin_url ? '' : 'disabled title="URL de LinkedIn no disponible"'}>
+                    <i class="bi bi-graph-up me-1"></i>Auto-métricas
+                  </button>
+                </div>
+              </div>
+              ${p.linkedin_url ? `<div class="mt-1"><a href="${escapeHtml(p.linkedin_url)}" target="_blank" rel="noopener" class="small text-muted"><i class="bi bi-linkedin me-1"></i>Ver en LinkedIn</a></div>` : ''}
+              <div class="mt-2">
+                <button class="btn btn-sm btn-outline-info" onclick="togglePostDiagnosis(${p.id})">
+                  <i class="bi bi-clipboard-data me-1"></i><span id="diag-toggle-label-${p.id}">Ver diagnóstico</span>
+                </button>
+              </div>
+              <div id="diagnosis-${p.id}" class="mt-2" style="display:none"></div>
             </div>
           </div>
         </div>`;
@@ -658,10 +944,266 @@ function changeHistoryPage(delta) {
   loadHistory();
 }
 
+
+async function savePostMetrics(postId) {
+  const payload = {
+    impressions: Number(document.getElementById(`metric-impressions-${postId}`)?.value || 0),
+    reactions: Number(document.getElementById(`metric-reactions-${postId}`)?.value || 0),
+    comments: Number(document.getElementById(`metric-comments-${postId}`)?.value || 0),
+    saves: Number(document.getElementById(`metric-saves-${postId}`)?.value || 0),
+    link_clicks: Number(document.getElementById(`metric-clicks-${postId}`)?.value || 0),
+  };
+
+  try {
+    const res = await apiFetch(`/api/history/${postId}/metrics`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      showGlobalError(data.error || "No se pudieron guardar las métricas.");
+      return;
+    }
+    await Promise.all([loadHistory(), loadAnalytics()]);
+  } catch {
+    showGlobalError("Error de red al guardar métricas del post.");
+  }
+}
+
+async function scrapePostMetrics(postId) {
+  const btn = document.getElementById(`scrape-btn-${postId}`);
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Scraping...';
+  }
+
+  try {
+    const res = await apiFetch(`/api/history/${postId}/scrape_metrics`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      showGlobalError(data.error || "No se pudo iniciar el scraping de métricas.");
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-graph-up me-1"></i>Auto-métricas'; }
+      return;
+    }
+
+    const jobId = data.job_id;
+    const pollInterval = setInterval(async () => {
+      try {
+        const statusRes = await apiFetch(`/api/job_status/${jobId}`);
+        const status = await statusRes.json();
+        if (status.status === "done") {
+          clearInterval(pollInterval);
+          if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-graph-up me-1"></i>Auto-métricas'; }
+          await Promise.all([loadHistory(), loadAnalytics()]);
+        } else if (status.status === "error") {
+          clearInterval(pollInterval);
+          if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-graph-up me-1"></i>Auto-métricas'; }
+          showGlobalError(status.message || "Error al obtener métricas automáticamente.");
+        }
+      } catch {
+        // keep polling
+      }
+    }, 2000);
+  } catch {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-graph-up me-1"></i>Auto-métricas'; }
+    showGlobalError("Error de red al iniciar scraping de métricas.");
+  }
+}
+
+
+// ── Per-post diagnosis ─────────────────────────────────────────────────────
+
+const _DIAG_VERDICT_CLASS = {
+  top: "bg-success text-white",
+  above: "bg-info text-white",
+  average: "bg-secondary text-white",
+  below: "bg-danger text-white",
+  no_data: "bg-warning text-dark",
+};
+
+async function togglePostDiagnosis(postId) {
+  const container = document.getElementById(`diagnosis-${postId}`);
+  const label = document.getElementById(`diag-toggle-label-${postId}`);
+  if (!container) return;
+
+  if (container.style.display !== "none") {
+    container.style.display = "none";
+    if (label) label.textContent = "Ver diagnóstico";
+    return;
+  }
+  container.style.display = "";
+  if (label) label.textContent = "Ocultar diagnóstico";
+  if (container.dataset.loaded === "1") return;
+  container.innerHTML =
+    '<div class="text-muted small"><span class="spinner-border spinner-border-sm me-2"></span>Analizando...</div>';
+  try {
+    const res = await apiFetch(`/api/history/${postId}/diagnosis`);
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      container.innerHTML = `<div class="text-danger small">${escapeHtml(data.error || "No se pudo cargar el diagnóstico.")}</div>`;
+      return;
+    }
+    renderPostDiagnosis(container, data.diagnosis || {});
+    container.dataset.loaded = "1";
+  } catch (error) {
+    container.innerHTML = `<div class="text-danger small">${escapeHtml(error.message || "Error de red al pedir el diagnóstico.")}</div>`;
+  }
+}
+
+function renderPostDiagnosis(container, diagnosis) {
+  const verdict = diagnosis.verdict || "no_data";
+  const badgeClass = _DIAG_VERDICT_CLASS[verdict] || "bg-secondary text-white";
+  const score = typeof diagnosis.score === "number" ? diagnosis.score.toFixed(1) : "—";
+  const engagementVs = typeof diagnosis.engagement_vs_peers === "number" ? `${diagnosis.engagement_vs_peers.toFixed(2)}×` : "—";
+  const poolLabel = diagnosis.comparison_pool_label === "category" ? "tu categoría" : "tu historial";
+  const poolSize = diagnosis.comparison_pool_size || 0;
+  const highlights = diagnosis.highlights || [];
+  const weaknesses = diagnosis.weaknesses || [];
+
+  const renderList = (items, icon, color) => items.length
+    ? `<ul class="list-unstyled mb-0">${items.map(item => `<li class="small ${color}"><i class="bi ${icon} me-1"></i>${escapeHtml(item)}</li>`).join("")}</ul>`
+    : '<p class="small text-muted mb-0">Sin observaciones.</p>';
+
+  container.innerHTML = `
+    <div class="border rounded p-3 bg-white">
+      <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+        <span class="badge ${badgeClass}">${escapeHtml(diagnosis.verdict_label || verdict)}</span>
+        <span class="small text-muted">Score ${score}/10</span>
+        <span class="small text-muted">·</span>
+        <span class="small text-muted">${engagementVs} vs media de ${escapeHtml(poolLabel)} (${poolSize} posts)</span>
+      </div>
+      <div class="row g-2">
+        <div class="col-md-6">
+          <div class="text-success small fw-semibold mb-1"><i class="bi bi-check-circle me-1"></i>Qué funcionó</div>
+          ${renderList(highlights, "bi-arrow-up-circle", "text-success")}
+        </div>
+        <div class="col-md-6">
+          <div class="text-danger small fw-semibold mb-1"><i class="bi bi-exclamation-circle me-1"></i>Qué falló</div>
+          ${renderList(weaknesses, "bi-arrow-down-circle", "text-danger")}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+
+// ── Pipeline feedback (analytics card section) ─────────────────────────────
+
+async function loadPipelineFeedback() {
+  const box = document.getElementById("pipeline-feedback-box");
+  if (!box) return;
+  box.textContent = "Cargando retroalimentación...";
+  try {
+    const res = await apiFetch("/api/analytics/pipeline_feedback");
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      box.textContent = data.error || "No se pudo cargar la retroalimentación.";
+      return;
+    }
+    if (!data.feedback) {
+      box.textContent = `Aún no hay suficientes posts con métricas (basado en ${data.based_on_posts || 0} posts). Captura métricas para que el sistema empiece a aprender.`;
+      return;
+    }
+    box.textContent = data.feedback;
+  } catch (error) {
+    box.textContent = error.message || "Error de red al pedir la retroalimentación.";
+  }
+}
+
+
+// ── Metrics collection settings ────────────────────────────────────────────
+
+async function loadMetricsCollectionStatus() {
+  const enabledEl = document.getElementById("metrics-collection-enabled");
+  const intervalEl = document.getElementById("metrics-collection-interval");
+  const statusEl = document.getElementById("metrics-collector-status");
+  if (!enabledEl || !intervalEl || !statusEl) return;
+  try {
+    const res = await apiFetch("/api/metrics/collection_status");
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      statusEl.innerHTML = `<span class="text-danger">${escapeHtml(data.error || "No se pudo cargar el estado.")}</span>`;
+      return;
+    }
+    const settings = data.settings || {};
+    enabledEl.checked = !!settings.enabled;
+    intervalEl.value = Number(settings.interval_hours || 6);
+    const run = data.current_run || {};
+    const lastCollected = settings.last_collected_at || "—";
+    const runStatus = run.status || "idle";
+    const runMessage = run.message || "Sin actividad reciente.";
+    statusEl.innerHTML = `
+      <div><strong>Estado:</strong> ${escapeHtml(runStatus)}</div>
+      <div>${escapeHtml(runMessage)}</div>
+      <div>Última recolección: ${escapeHtml(lastCollected)}</div>
+      <div>Procesados/actualizados/errores en último ciclo: ${run.processed || 0} / ${run.updated || 0} / ${run.errors || 0}</div>
+    `;
+  } catch (error) {
+    statusEl.innerHTML = `<span class="text-danger">${escapeHtml(error.message || "Error de red.")}</span>`;
+  }
+}
+
+async function saveMetricsCollectionSettings() {
+  const enabledEl = document.getElementById("metrics-collection-enabled");
+  const intervalEl = document.getElementById("metrics-collection-interval");
+  if (!enabledEl || !intervalEl) return;
+  const payload = {
+    enabled: enabledEl.checked,
+    interval_hours: parseInt(intervalEl.value || "6", 10),
+  };
+  try {
+    const res = await apiFetch("/api/metrics/collection_settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      showGlobalError(data.error || "No se pudo guardar la configuración.");
+      return;
+    }
+    await loadMetricsCollectionStatus();
+  } catch (error) {
+    showGlobalError(error.message || "Error de red al guardar la configuración.");
+  }
+}
+
+async function collectMetricsNow() {
+  const btn = document.getElementById("metrics-collect-now-btn");
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Recolectando...';
+  }
+  try {
+    const res = await apiFetch("/api/metrics/collect_now", { method: "POST" });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      showGlobalError(data.error || "No se pudo iniciar la recolección.");
+      return;
+    }
+    // Poll status until idle
+    const poll = setInterval(async () => {
+      await loadMetricsCollectionStatus();
+      const statusBox = document.getElementById("metrics-collector-status");
+      if (statusBox && statusBox.textContent.includes("idle")) {
+        clearInterval(poll);
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-play-fill me-1"></i>Ejecutar ahora'; }
+        await Promise.all([loadHistory(), loadAnalytics(), loadPipelineFeedback()]);
+      }
+    }, 2500);
+  } catch (error) {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-play-fill me-1"></i>Ejecutar ahora'; }
+    showGlobalError(error.message || "Error de red al iniciar la recolección.");
+  }
+}
+
+
 // ── Utility ────────────────────────────────────────────────────────────────
 
 function resetUI() {
   currentSessionId = null;
+  renderResolvedCategoryBanner(currentCategory, currentResolvedCategory);
   const previewPanel = document.getElementById("preview-panel");
   if (!previewPanel) return;
   previewPanel.classList.add("d-none");
@@ -758,6 +1300,7 @@ function persistPipelineSessionState() {
     const payload = {
       session_id: currentSessionId,
       category: currentCategory || getSelectedCategoryName(),
+      resolved_category: currentResolvedCategory,
       test_mode: !!currentTestMode,
     };
     localStorage.setItem(PIPELINE_SESSION_STORAGE_KEY, JSON.stringify(payload));
@@ -794,6 +1337,7 @@ async function restorePipelineState() {
   currentSessionId = saved.session_id;
   currentTestMode = !!saved.test_mode;
   if (saved.category) currentCategory = saved.category;
+  if (saved.resolved_category) currentResolvedCategory = saved.resolved_category;
   await refreshPipelineState();
 }
 
@@ -824,7 +1368,8 @@ async function refreshPipelineState() {
 function renderPersistedPipelineState(state) {
   currentSessionId = state.id;
   currentTestMode = !!state.test_mode;
-  currentCategory = state.category || currentCategory || getSelectedCategoryName();
+  currentCategory = state.requested_category || state.category || currentCategory || getSelectedCategoryName();
+  currentResolvedCategory = state.resolved_category || state.category || currentResolvedCategory || "";
   persistPipelineSessionState();
 
   const select = document.getElementById("pipeline-category");
@@ -836,6 +1381,7 @@ function renderPersistedPipelineState(state) {
   resetUI();
   const stepsPanel = document.getElementById("steps-panel");
   if (stepsPanel) stepsPanel.classList.remove("d-none");
+  renderResolvedCategoryBanner(currentCategory, currentResolvedCategory);
 
   const events = Array.isArray(state.events) ? state.events : [];
   let hasPreview = false;
@@ -853,13 +1399,13 @@ function renderPersistedPipelineState(state) {
       setStepError(event.step, event.message || "");
     } else if (event.status === "preview") {
       hasPreview = true;
-      setStepDone(7, event.test_mode ? "Vista previa generada (modo prueba)" : "Listo para publicar");
+      setStepDone(6, event.test_mode ? "Vista previa generada (modo prueba)" : "Listo para publicar");
     }
   }
 
   if (state.preview) {
     hasPreview = true;
-    setStepDone(7, state.preview.test_mode ? "Vista previa generada (modo prueba)" : "Listo para publicar");
+    setStepDone(6, state.preview.test_mode ? "Vista previa generada (modo prueba)" : "Listo para publicar");
     showPreviewPanel(state.preview);
     const regenerateBtn = document.getElementById("regenerate-btn");
     if (regenerateBtn) regenerateBtn.classList.remove("d-none");
@@ -876,10 +1422,35 @@ function renderPersistedPipelineState(state) {
   if (!hasPreview && state.status === "ready" && state.preview) showPreviewPanel(state.preview);
 }
 
+function renderResolvedCategoryBanner(requestedCategory, resolvedCategory) {
+  const banner = document.getElementById("resolved-category-banner");
+  const nameEl = document.getElementById("resolved-category-name");
+  if (!banner || !nameEl) return;
+
+  if (requestedCategory === "random" && resolvedCategory) {
+    nameEl.textContent = resolvedCategory;
+    banner.classList.remove("d-none");
+    return;
+  }
+
+  nameEl.textContent = "";
+  banner.classList.add("d-none");
+}
+
 function escapeHtml(str) {
   const div = document.createElement("div");
   div.appendChild(document.createTextNode(str));
   return div.innerHTML;
+}
+
+
+function formatNumber(value) {
+  return Number(value || 0).toLocaleString("es-ES");
+}
+
+
+function formatPercent(value) {
+  return `${(Number(value || 0) * 100).toFixed(1)}%`;
 }
 
 // ── Pipeline categories ─────────────────────────────────────────────────────
@@ -891,6 +1462,7 @@ async function loadCategories() {
     categoryStore = data.categories || [];
     renderCategorySelect(data.default_category || "");
     renderCategorySettings(data.default_category || "");
+    renderScheduleCategorySelect();
   } catch {
     // ignore
   }
@@ -905,6 +1477,10 @@ function getCategoryByName(name) {
   return categoryStore.find(cat => cat.name === name) || null;
 }
 
+function getDefaultCategoryName() {
+  return (categoryStore.find(cat => cat.is_default) || categoryStore[0] || {}).name || "";
+}
+
 function renderCategorySelect(defaultCategory) {
   const select = document.getElementById("pipeline-category");
   if (!select) return;
@@ -916,11 +1492,13 @@ function renderCategorySelect(defaultCategory) {
     return;
   }
 
-  select.innerHTML = categoryStore.map(cat =>
+  select.innerHTML = '<option value="random">random · elegir categoría al azar</option>' + categoryStore.map(cat =>
     `<option value="${escapeHtml(cat.name)}">${escapeHtml(cat.name)}</option>`
   ).join("");
-  const selectedCategory = getCategoryByName(defaultCategory) || categoryStore[0];
-  select.value = selectedCategory.name;
+  const selectedCategory = currentCategory && Array.from(select.options).some(option => option.value === currentCategory)
+    ? currentCategory
+    : (defaultCategory || getDefaultCategoryName() || categoryStore[0].name);
+  select.value = selectedCategory;
   currentCategory = select.value;
   renderSelectedCategorySummary(select.value);
 }
@@ -930,6 +1508,13 @@ function renderSelectedCategorySummary(categoryName) {
   const descriptionEl = document.getElementById("pipeline-category-description");
   const badgeEl = document.getElementById("pipeline-category-default-badge");
   if (!nameEl || !descriptionEl || !badgeEl) return;
+
+  if (categoryName === "random") {
+    nameEl.textContent = "Random";
+    descriptionEl.textContent = "El pipeline elegirá al azar una categoría disponible al iniciar una nueva generación.";
+    badgeEl.classList.add("d-none");
+    return;
+  }
 
   const category = getCategoryByName(categoryName);
   if (!category) {
@@ -1023,6 +1608,10 @@ function selectCategoryForEdit(categoryId) {
 
   const negEl = document.getElementById("category-negative-prompt");
   if (negEl) negEl.value = category.negative_prompt || "";
+  _catForbiddenPhrases = Array.isArray(category.forbidden_phrases) ? [...category.forbidden_phrases] : [];
+  renderCatForbidden();
+  _catVoiceExamples = Array.isArray(category.voice_examples) ? [...category.voice_examples] : [];
+  renderCatVoiceExamples();
   _catFallbackTopics = Array.isArray(category.fallback_topics) ? [...category.fallback_topics] : [];
   renderCatFallbacks();
   const originalityEl = document.getElementById("category-originality-level");
@@ -1083,6 +1672,10 @@ function createNewCategory() {
   renderCatKeywords();
   const negEl = document.getElementById("category-negative-prompt");
   if (negEl) negEl.value = "";
+  _catForbiddenPhrases = [];
+  renderCatForbidden();
+  _catVoiceExamples = [];
+  renderCatVoiceExamples();
   _catFallbackTopics = [];
   renderCatFallbacks();
   const originalityEl = document.getElementById("category-originality-level");
@@ -1134,6 +1727,8 @@ async function saveCategorySettings() {
     audience_focus: document.getElementById("category-audience-focus")?.value.trim() || "",
     preferred_formats: [..._catPreferredFormats],
     preferred_visual_styles: [..._catPreferredVisualStyles],
+    forbidden_phrases: [..._catForbiddenPhrases],
+    voice_examples: [..._catVoiceExamples],
   };
 
   try {
@@ -1249,6 +1844,8 @@ let _catKeywords = [];
 let _catFallbackTopics = [];
 let _catPreferredFormats = [];
 let _catPreferredVisualStyles = [];
+let _catForbiddenPhrases = [];
+let _catVoiceExamples = [];
 
 function addCatKeyword() {
   const input = document.getElementById("cat-keyword-input");
@@ -1340,6 +1937,65 @@ function renderCatFallbacks() {
   ).join("");
 }
 
+function addCatForbidden() {
+  const input = document.getElementById("cat-forbidden-input");
+  if (!input) return;
+  const val = input.value.trim();
+  if (!val || _catForbiddenPhrases.includes(val)) { input.value = ""; return; }
+  _catForbiddenPhrases.push(val);
+  renderCatForbidden();
+  input.value = "";
+}
+
+function removeCatForbidden(idx) {
+  _catForbiddenPhrases.splice(idx, 1);
+  renderCatForbidden();
+}
+
+function renderCatForbidden() {
+  const el = document.getElementById("cat-forbidden-list");
+  if (!el) return;
+  el.innerHTML = _catForbiddenPhrases.map((phrase, idx) =>
+    `<span class="badge bg-danger d-flex align-items-center gap-1" style="font-size:12px;max-width:280px;white-space:normal;text-align:left">
+      <i class="bi bi-x-octagon me-1"></i>${escapeHtml(phrase)}
+      <button type="button" class="btn-close btn-close-white ms-1"
+              style="font-size:8px" onclick="removeCatForbidden(${idx})"></button>
+    </span>`
+  ).join("");
+}
+
+function addCatVoiceExample() {
+  const input = document.getElementById("cat-voice-input");
+  if (!input) return;
+  const val = input.value.trim();
+  if (!val || _catVoiceExamples.includes(val)) { input.value = ""; return; }
+  if (_catVoiceExamples.length >= 5) {
+    showSettingsAlert("Máximo 5 ejemplos de voz por categoría.", "warning");
+    return;
+  }
+  _catVoiceExamples.push(val);
+  renderCatVoiceExamples();
+  input.value = "";
+}
+
+function removeCatVoiceExample(idx) {
+  _catVoiceExamples.splice(idx, 1);
+  renderCatVoiceExamples();
+}
+
+function renderCatVoiceExamples() {
+  const el = document.getElementById("cat-voice-list");
+  if (!el) return;
+  el.innerHTML = _catVoiceExamples.map((example, idx) =>
+    `<div class="border rounded p-2 d-flex align-items-start gap-2" style="font-size:12px;background:#f8f9fa">
+      <i class="bi bi-chat-quote text-success mt-1"></i>
+      <div class="flex-grow-1" style="white-space:pre-wrap">${escapeHtml(example)}</div>
+      <button type="button" class="btn-close" style="font-size:10px"
+              onclick="removeCatVoiceExample(${idx})"></button>
+    </div>`
+  ).join("");
+}
+
 function adjustHashtags(delta) {
   const slider = document.getElementById("category-hashtag-count");
   if (!slider) return;
@@ -1372,6 +2028,8 @@ function duplicateCategory() {
 let _schedPollInterval = null;
 let _schedTimes = [];
 let _schedDays = [];  // [] = all days; otherwise list of ints 0=Mon..6=Sun
+let _scheduleCategory = "";
+let _schedRules = [];  // list of {days: int[], times: string[], category: string}
 
 const _DAY_LABELS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
 
@@ -1389,6 +2047,8 @@ function renderSchedule(data) {
   const cfg = data.config || {};
   const runs = data.recent_runs || [];
   const cur = data.current_run || {};
+  _scheduleCategory = cfg.category_name || _scheduleCategory || getDefaultCategoryName();
+  renderScheduleCategorySelect();
 
   // Enabled toggle
   document.getElementById("sched-enabled").checked = !!cfg.enabled;
@@ -1411,6 +2071,10 @@ function renderSchedule(data) {
   // Days of week
   _schedDays = cfg.days_of_week || [];
   renderSchedDays();
+
+  // Rules (advanced mode)
+  _schedRules = Array.isArray(cfg.rules) ? cfg.rules : [];
+  renderSchedRules();
 
   // Next / last run
   document.getElementById("sched-next-run").textContent = cfg.next_run_at
@@ -1491,8 +2155,157 @@ function onSchedModeChange() {
 
 function showSchedMode(mode) {
   if (!document.getElementById("sched-interval-section")) return;
+  const isRules = mode === "rules";
   document.getElementById("sched-interval-section").classList.toggle("d-none", mode !== "interval");
   document.getElementById("sched-times-section").classList.toggle("d-none", mode !== "times");
+  const rulesSection = document.getElementById("sched-rules-section");
+  if (rulesSection) rulesSection.classList.toggle("d-none", !isRules);
+  // Hide global category + days selectors when using rules (each rule has its own)
+  const catSection = document.getElementById("sched-category-section");
+  if (catSection) catSection.classList.toggle("d-none", isRules);
+  const daysSection = document.getElementById("sched-days-section");
+  if (daysSection) daysSection.classList.toggle("d-none", isRules);
+}
+
+function renderScheduleCategorySelect() {
+  const select = document.getElementById("sched-category");
+  if (!select) return;
+
+  select.disabled = false;
+  select.innerHTML = [
+    '<option value="random">random · cualquier categoría</option>',
+    ...categoryStore.map(cat => `<option value="${escapeHtml(cat.name)}">${escapeHtml(cat.name)}</option>`),
+  ].join("");
+
+  const selectedCategory = _scheduleCategory && Array.from(select.options).some(option => option.value === _scheduleCategory)
+    ? _scheduleCategory
+    : getDefaultCategoryName();
+  select.value = selectedCategory || "random";
+  _scheduleCategory = select.value;
+}
+
+function _categoryOptionsHtml(selected) {
+  const safeSelected = selected || "random";
+  const options = [
+    `<option value="random"${safeSelected === "random" ? " selected" : ""}>random · cualquier categoría</option>`,
+    ...categoryStore.map(cat => {
+      const name = escapeHtml(cat.name);
+      const sel = cat.name === safeSelected ? " selected" : "";
+      return `<option value="${name}"${sel}>${name}</option>`;
+    }),
+  ];
+  return options.join("");
+}
+
+function renderSchedRules() {
+  const list = document.getElementById("sched-rules-list");
+  if (!list) return;
+  if (!_schedRules.length) {
+    list.innerHTML = '<p class="text-muted small mb-0">Sin reglas. Pulsa "Agregar regla" para empezar.</p>';
+    return;
+  }
+  list.innerHTML = _schedRules.map((rule, idx) => {
+    const days = Array.isArray(rule.days) ? rule.days : [];
+    const times = Array.isArray(rule.times) ? rule.times : [];
+    const category = rule.category || "random";
+    const dayBtns = _DAY_LABELS.map((label, dayIdx) => {
+      const active = days.includes(dayIdx);
+      return `<button type="button" class="btn btn-sm ${active ? "btn-primary" : "btn-outline-secondary"}" style="min-width:42px"
+        onclick="toggleSchedRuleDay(${idx}, ${dayIdx})">${label}</button>`;
+    }).join("");
+    const timeChips = times.map(t => `
+      <span class="badge bg-primary d-flex align-items-center gap-1" style="font-size:13px">
+        <i class="bi bi-clock me-1"></i>${escapeHtml(t)}
+        <button type="button" class="btn-close btn-close-white ms-1" style="font-size:9px"
+          onclick="removeSchedRuleTime(${idx}, '${escapeHtml(t)}')"></button>
+      </span>`).join("");
+    return `
+      <div class="border rounded p-3" data-rule-index="${idx}">
+        <div class="d-flex align-items-center justify-content-between mb-2">
+          <span class="fw-semibold small">Regla #${idx + 1}</span>
+          <button class="btn btn-sm btn-outline-danger" onclick="removeSchedRule(${idx})">
+            <i class="bi bi-trash"></i>
+          </button>
+        </div>
+        <div class="mb-2">
+          <label class="form-label small mb-1">Categoría</label>
+          <select class="form-select form-select-sm" onchange="updateSchedRuleCategory(${idx}, this.value)">
+            ${_categoryOptionsHtml(category)}
+          </select>
+        </div>
+        <div class="mb-2">
+          <label class="form-label small mb-1">Días <small class="text-muted">(vacío = todos)</small></label>
+          <div class="d-flex flex-wrap gap-1">${dayBtns}</div>
+        </div>
+        <div>
+          <label class="form-label small mb-1">Horas (UTC)</label>
+          <div class="d-flex flex-wrap gap-2 mb-2">${timeChips || '<small class="text-muted">Aún sin horas</small>'}</div>
+          <div class="d-flex gap-2">
+            <input type="time" class="form-control form-control-sm" id="sched-rule-time-input-${idx}" style="width:130px">
+            <button class="btn btn-sm btn-outline-secondary" onclick="addSchedRuleTime(${idx})">
+              <i class="bi bi-plus-lg"></i> Agregar
+            </button>
+          </div>
+        </div>
+      </div>`;
+  }).join("");
+}
+
+function addSchedRule() {
+  _schedRules = [..._schedRules, { days: [], times: [], category: "random" }];
+  renderSchedRules();
+  saveSchedule();
+}
+
+function removeSchedRule(idx) {
+  _schedRules = _schedRules.filter((_, i) => i !== idx);
+  renderSchedRules();
+  saveSchedule();
+}
+
+function toggleSchedRuleDay(idx, day) {
+  const rule = _schedRules[idx];
+  if (!rule) return;
+  const days = Array.isArray(rule.days) ? [...rule.days] : [];
+  if (days.includes(day)) {
+    rule.days = days.filter(d => d !== day);
+  } else {
+    rule.days = [...days, day].sort();
+  }
+  renderSchedRules();
+  saveSchedule();
+}
+
+function addSchedRuleTime(idx) {
+  const input = document.getElementById(`sched-rule-time-input-${idx}`);
+  if (!input) return;
+  const val = input.value;
+  if (!val) return;
+  const rule = _schedRules[idx];
+  if (!rule) return;
+  const times = Array.isArray(rule.times) ? [...rule.times] : [];
+  if (times.includes(val)) return;
+  times.push(val);
+  times.sort();
+  rule.times = times;
+  input.value = "";
+  renderSchedRules();
+  saveSchedule();
+}
+
+function removeSchedRuleTime(idx, time) {
+  const rule = _schedRules[idx];
+  if (!rule) return;
+  rule.times = (rule.times || []).filter(t => t !== time);
+  renderSchedRules();
+  saveSchedule();
+}
+
+function updateSchedRuleCategory(idx, value) {
+  const rule = _schedRules[idx];
+  if (!rule) return;
+  rule.category = value || "random";
+  saveSchedule();
 }
 
 function addScheduleTime() {
@@ -1553,12 +2366,19 @@ async function saveSchedule() {
   const interval_hours = parseInt(document.getElementById("sched-interval-range").value);
   const times_of_day = [..._schedTimes];
   const days_of_week = [..._schedDays];
+  const category_name = document.getElementById("sched-category")?.value || "";
+  _scheduleCategory = category_name;
+  const rules = _schedRules.map(r => ({
+    days: Array.isArray(r.days) ? r.days : [],
+    times: Array.isArray(r.times) ? r.times : [],
+    category: r.category || "random",
+  }));
 
   try {
     const res = await apiFetch("/api/schedule", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enabled, mode, interval_hours, times_of_day, days_of_week }),
+      body: JSON.stringify({ enabled, mode, interval_hours, times_of_day, days_of_week, category_name, rules }),
     });
     const data = await res.json();
     if (!res.ok || data.error) {

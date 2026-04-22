@@ -20,6 +20,7 @@
       <div class="top-nav-links d-none d-md-flex align-items-center gap-2">
         <a href="/" class="top-nav-link active">Dashboard</a>
         <a href="/automation" class="top-nav-link">Automatización</a>
+        <a href="/messages" class="top-nav-link">Mensajes</a>
         <a href="/settings" class="top-nav-link">Configuración</a>
       </div>
     </div>
@@ -59,6 +60,9 @@
           <a href="/settings" class="btn btn-outline-secondary ms-2">
             <i class="bi bi-sliders me-2"></i>Configurar categorías
           </a>
+          <a href="/messages" class="btn btn-outline-secondary ms-2">
+            <i class="bi bi-chat-dots me-2"></i>Abrir mensajería
+          </a>
         </div>
         <div class="dashboard-summary">
           <div class="summary-chip">
@@ -72,6 +76,10 @@
           <div class="summary-chip">
             <i class="bi bi-shield-check"></i>
             <span>Sesión LinkedIn</span>
+          </div>
+          <div class="summary-chip">
+            <i class="bi bi-chat-left-text"></i>
+            <span>Inbox asistido</span>
           </div>
         </div>
       </div>
@@ -110,7 +118,7 @@
       <!-- Mode selector -->
       <div class="mb-3">
         <label class="form-label fw-semibold small">Modo de programación</label>
-        <div class="d-flex gap-3">
+        <div class="d-flex gap-3 flex-wrap">
           <div class="form-check">
             <input class="form-check-input" type="radio" name="sched-mode" id="sched-mode-interval"
                    value="interval" checked onchange="onSchedModeChange()">
@@ -121,7 +129,30 @@
                    value="times" onchange="onSchedModeChange()">
             <label class="form-check-label small" for="sched-mode-times">Horas específicas</label>
           </div>
+          <div class="form-check">
+            <input class="form-check-input" type="radio" name="sched-mode" id="sched-mode-rules"
+                   value="rules" onchange="onSchedModeChange()">
+            <label class="form-check-label small" for="sched-mode-rules">Reglas avanzadas</label>
+          </div>
         </div>
+      </div>
+
+      <div class="mb-3" id="sched-category-section">
+        <label for="sched-category" class="form-label fw-semibold small">Categoría automática</label>
+        <select id="sched-category" class="form-select form-select-sm" onchange="saveSchedule()">
+          <option value="">Cargando categorías...</option>
+        </select>
+        <div class="form-text">Puedes fijar una categoría concreta o usar `random` para elegir una al azar en cada ejecución.</div>
+      </div>
+
+      <!-- Rules mode (advanced) -->
+      <div id="sched-rules-section" class="mb-3 d-none">
+        <label class="form-label fw-semibold small">Reglas programadas</label>
+        <div class="form-text mb-2">Cada regla define sus propios días, horas y categoría. Útil para publicar distinto contenido en distintos días.</div>
+        <div id="sched-rules-list" class="d-flex flex-column gap-3"></div>
+        <button class="btn btn-sm btn-outline-primary mt-2" onclick="addSchedRule()">
+          <i class="bi bi-plus-lg me-1"></i>Agregar regla
+        </button>
       </div>
 
       <!-- Interval mode -->
@@ -154,7 +185,7 @@
       </div>
 
       <!-- Days of week -->
-      <div class="mb-3">
+      <div class="mb-3" id="sched-days-section">
         <label class="form-label fw-semibold small">Días de la semana <small class="text-muted fw-normal">(vacío = todos)</small></label>
         <div class="d-flex flex-wrap gap-2" id="sched-days-row">
           <!-- rendered by JS -->
@@ -200,6 +231,102 @@
     </div>
   </div>
 
+  <div class="card shadow-sm mt-5" id="analytics-card">
+    <div class="card-header d-flex align-items-center justify-content-between">
+      <span class="fw-semibold"><i class="bi bi-graph-up-arrow me-2"></i>Analítica de rendimiento</span>
+      <div class="d-flex align-items-center gap-2">
+        <div class="btn-group btn-group-sm" role="group" id="period-filter">
+          <button class="btn btn-outline-secondary" onclick="setAnalyticsPeriod('7d')">7d</button>
+          <button class="btn btn-outline-secondary active" onclick="setAnalyticsPeriod('30d')">30d</button>
+          <button class="btn btn-outline-secondary" onclick="setAnalyticsPeriod('90d')">90d</button>
+          <button class="btn btn-outline-secondary" onclick="setAnalyticsPeriod('all')">Todo</button>
+        </div>
+        <button class="btn btn-sm btn-outline-secondary" onclick="loadAnalytics()">
+          <i class="bi bi-arrow-clockwise"></i>
+        </button>
+      </div>
+    </div>
+    <div class="card-body">
+      <div id="analytics-summary">
+        <p class="text-muted small mb-0">Cargando analítica...</p>
+      </div>
+      <div id="analytics-trend" class="mt-4" style="display:none">
+        <h6 class="text-muted mb-2">Tendencia de engagement</h6>
+        <canvas id="chart-trend" height="80"></canvas>
+      </div>
+      <div id="analytics-charts" class="mt-4" style="display:none">
+        <div class="row g-4">
+          <div class="col-md-6">
+            <h6 class="text-muted mb-2">Por categoría</h6>
+            <canvas id="chart-category" height="140"></canvas>
+          </div>
+          <div class="col-md-6">
+            <h6 class="text-muted mb-2">Por hook type</h6>
+            <canvas id="chart-hook" height="140"></canvas>
+          </div>
+          <div class="col-md-6">
+            <h6 class="text-muted mb-2">Por hora del día</h6>
+            <canvas id="chart-hour" height="140"></canvas>
+          </div>
+          <div class="col-md-6">
+            <h6 class="text-muted mb-2">Por formato de contenido</h6>
+            <canvas id="chart-format" height="140"></canvas>
+          </div>
+        </div>
+      </div>
+      <div id="analytics-recommendations" class="mt-3"></div>
+      <div id="analytics-insights" class="mt-3"></div>
+
+      <div id="pipeline-feedback-section" class="mt-4 border-top pt-3">
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+          <h6 class="text-muted mb-0">
+            <i class="bi bi-arrow-repeat me-2 text-primary"></i>Aprendizajes para el próximo post
+          </h6>
+          <button class="btn btn-sm btn-outline-secondary" onclick="loadPipelineFeedback()">
+            <i class="bi bi-arrow-clockwise me-1"></i>Refrescar
+          </button>
+        </div>
+        <p class="small text-muted mb-2">
+          Esto es lo que el sistema le pasará al LLM en la próxima generación, derivado de las métricas reales.
+        </p>
+        <div id="pipeline-feedback-box" class="border rounded bg-light p-3 small text-muted"
+             style="white-space:pre-wrap;font-family:ui-monospace,monospace;max-height:280px;overflow:auto">
+          Cargando retroalimentación...
+        </div>
+      </div>
+
+      <div id="metrics-collector-section" class="mt-4 border-top pt-3">
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+          <h6 class="text-muted mb-0">
+            <i class="bi bi-cloud-download me-2 text-primary"></i>Recolección automática de métricas
+          </h6>
+          <button id="metrics-collect-now-btn" class="btn btn-sm btn-outline-primary" onclick="collectMetricsNow()">
+            <i class="bi bi-play-fill me-1"></i>Ejecutar ahora
+          </button>
+        </div>
+        <div class="row g-2 align-items-end">
+          <div class="col-sm-4">
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="metrics-collection-enabled">
+              <label class="form-check-label small" for="metrics-collection-enabled">Activar ciclo automático</label>
+            </div>
+          </div>
+          <div class="col-sm-4">
+            <label class="form-label small mb-1">Cada (horas)</label>
+            <input id="metrics-collection-interval" type="number" min="1" max="168"
+                   class="form-control form-control-sm" value="6">
+          </div>
+          <div class="col-sm-4 d-grid">
+            <button class="btn btn-sm btn-primary" onclick="saveMetricsCollectionSettings()">
+              <i class="bi bi-floppy-fill me-1"></i>Guardar
+            </button>
+          </div>
+        </div>
+        <div id="metrics-collector-status" class="small text-muted mt-2"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- Post history section -->
   <div class="mt-5">
     <div class="d-flex align-items-center justify-content-between mb-2">
@@ -229,9 +356,10 @@
 </main>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
   window.APP_BOOTSTRAP = {{ app_bootstrap|tojson }};
 </script>
-<script src="/static/js/app.js?v=20260317-state"></script>
+<script src="/static/js/app.js?v=20260407-metrics-feedback"></script>
 </body>
 </html>

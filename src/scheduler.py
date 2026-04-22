@@ -72,17 +72,55 @@ def _parse_iso_datetime(value: str | None) -> datetime | None:
 
 def compute_next_run(cfg: dict) -> str | None:
     """Return ISO string of next scheduled run time, or None if disabled."""
+    nxt, _ = compute_next_run_with_category(cfg)
+    return nxt
+
+
+def compute_next_run_with_category(cfg: dict) -> tuple[str | None, str]:
+    """Return (next_run_iso, category) tuple. category is '' unless mode == 'rules'."""
     if not cfg.get("enabled"):
-        return None
+        return None, ""
     now_utc = _utc_now()
     schedule_tz = _schedule_timezone()
     now_local = now_utc.astimezone(schedule_tz)
+
+    mode = cfg.get("mode", "interval")
+
+    if mode == "rules":
+        rules = cfg.get("rules") or []
+        candidates: list[tuple[datetime, str]] = []
+        for rule in rules:
+            if not isinstance(rule, dict):
+                continue
+            rule_days = rule.get("days") or []
+            rule_times = rule.get("times") or []
+            rule_category = str(rule.get("category") or "").strip()
+            if not rule_times:
+                continue
+            for day_offset in range(8):
+                check_date = now_local + timedelta(days=day_offset)
+                if rule_days and check_date.weekday() not in rule_days:
+                    continue
+                for t in rule_times:
+                    try:
+                        h, m = map(int, str(t).split(":"))
+                        candidate_local = check_date.replace(hour=h, minute=m, second=0, microsecond=0)
+                        if candidate_local > now_local:
+                            candidates.append((candidate_local.astimezone(UTC), rule_category))
+                    except Exception:
+                        continue
+        if not candidates:
+            return None, ""
+        candidates.sort(key=lambda x: x[0])
+        winner = candidates[0]
+        return winner[0].isoformat(), winner[1]
+
     days_of_week = cfg.get("days_of_week", [])  # [] = all days allowed
 
     def _day_allowed(dt: datetime) -> bool:
         return not days_of_week or dt.weekday() in days_of_week
 
-    if cfg["mode"] == "interval":
+    if mode == "interval":
         hours = float(cfg.get("interval_hours", 24))
         last = _parse_iso_datetime(cfg.get("last_run_at"))
         if last:
@@ -98,13 +136,13 @@ def compute_next_run(cfg: dict) -> str | None:
                 if _day_allowed(nxt_local):
                     break
                 nxt_local += timedelta(days=1)
-        return nxt_local.astimezone(UTC).isoformat()
+        return nxt_local.astimezone(UTC).isoformat(), ""
 
     # mode == "times"
     times = cfg.get("times_of_day", [])
     if not times:
-        return None
-    candidates = []
+        return None, ""
+    candidates_times: list[datetime] = []
     # Search up to 8 days ahead so day filtering can always find a match
     for day_offset in range(8):
         check_date = now_local + timedelta(days=day_offset)
@@ -115,12 +153,12 @@ def compute_next_run(cfg: dict) -> str | None:
                 h, m = map(int, t.split(":"))
                 candidate_local = check_date.replace(hour=h, minute=m, second=0, microsecond=0)
                 if candidate_local > now_local:
-                    candidates.append(candidate_local.astimezone(UTC))
+                    candidates_times.append(candidate_local.astimezone(UTC))
             except Exception:
                 continue
-    if not candidates:
-        return None
-    return min(candidates).isoformat()
+    if not candidates_times:
+        return None, ""
+    return min(candidates_times).isoformat(), ""
 
 
 # ─── Internal loop ────────────────────────────────────────────────────────────
@@ -134,7 +172,47 @@ def _loop():
             _tick(db, linkedin)
         except Exception as e:
             logger.exception("Unexpected error in scheduler tick", extra={"event": "scheduler.tick_error"})
+        try:
+            _metrics_tick(db, linkedin)
+        except Exception as e:
+            logger.exception(
+                "Unexpected error in metrics-collection tick",
+                extra={"event": "scheduler.metrics_tick_error"},
+            )
         _stop_event.wait(30)  # check every 30 seconds
+
+
+def _metrics_tick(db, linkedin_mod):
+    """Run the metrics-collection cycle when its interval has elapsed.
+
+    Reuses the same daemon thread as the post-publishing tick. Honors the
+    `metrics_collection_enabled` flag and `metrics_collection_interval_hours`
+    column on schedule_config.
+    """
+    cfg = db.get_schedule()
+    if not cfg.get("metrics_collection_enabled"):
+        return
+
+    last_collected_iso = cfg.get("metrics_last_collected_at") or ""
+    interval_hours = float(cfg.get("metrics_collection_interval_hours") or 6)
+    if last_collected_iso:
+        try:
+            last_collected = _parse_iso_datetime(last_collected_iso)
+        except Exception:
+            last_collected = None
+        if last_collected and (_utc_now() - last_collected) < timedelta(hours=interval_hours):
+            return
+
+    from src import metrics_collector
+
+    if metrics_collector.current_run.get("status") == "running":
+        return
+
+    logger.info(
+        "Iniciando ciclo automático de recolección de métricas",
+        extra={"event": "scheduler.metrics_tick_start"},
+    )
+    metrics_collector.collect_metrics_cycle(db, linkedin_mod)
 
 
 def _tick(db, linkedin_mod):
@@ -146,8 +224,11 @@ def _tick(db, linkedin_mod):
     next_run = cfg.get("next_run_at")
     if not next_run:
         # First boot with enabled=True but no next_run computed
-        nxt = compute_next_run(cfg)
-        db.update_schedule_run_times(cfg.get("last_run_at", ""), nxt)
+        nxt, nxt_category = compute_next_run_with_category(cfg)
+        try:
+            db.update_schedule_run_times(cfg.get("last_run_at", ""), nxt, next_run_category=nxt_category)
+        except TypeError:
+            db.update_schedule_run_times(cfg.get("last_run_at", ""), nxt)
         return
 
     try:
@@ -171,12 +252,23 @@ def _tick(db, linkedin_mod):
         logger.info(msg, extra={"event": "scheduler.status"})
 
     try:
+        if getattr(linkedin_mod, "is_login_in_progress", lambda: False)():
+            raise PermissionError("Hay un inicio de sesion manual de LinkedIn en progreso. Reintentando en el siguiente ciclo.")
+
         if not linkedin_mod.is_session_valid(verify_browser=True, log=log):
             raise PermissionError("No hay una sesión válida de LinkedIn para ejecutar la publicación programada.")
 
-        category_cfg = db.get_default_pipeline_category()
+        if cfg.get("mode") == "rules":
+            requested_category_name = str(cfg.get("next_run_category", "") or "").strip()
+        else:
+            requested_category_name = str(cfg.get("category_name", "") or "").strip()
+        category_cfg, _ = db.resolve_pipeline_category_choice(requested_category_name or None)
         if not category_cfg:
-            raise RuntimeError("No hay una categoría predeterminada configurada.")
+            if requested_category_name and requested_category_name != db.RANDOM_CATEGORY_NAME:
+                raise RuntimeError("La categoría programada ya no existe.")
+            raise RuntimeError("No hay categorías configuradas para ejecutar la automatización.")
+
+        current_run["message"] = f"Iniciando pipeline programado con categoría {category_cfg['name']}..."
 
         stage_messages = {
             "candidate_research": "Investigando señales...",
@@ -238,5 +330,9 @@ def _tick(db, linkedin_mod):
         # Always advance next_run regardless of success/failure
         now_iso = _utc_now().isoformat()
         cfg_fresh = db.get_schedule()
-        nxt = compute_next_run(cfg_fresh)
-        db.update_schedule_run_times(now_iso, nxt)
+        nxt, nxt_category = compute_next_run_with_category(cfg_fresh)
+        try:
+            db.update_schedule_run_times(now_iso, nxt, next_run_category=nxt_category)
+        except TypeError:
+            # Backward compat: older db.update_schedule_run_times without the kwarg (e.g. test fakes)
+            db.update_schedule_run_times(now_iso, nxt)
